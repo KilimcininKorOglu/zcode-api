@@ -21,7 +21,7 @@ import { loadCredential } from "../auth/store.js";
 import { buildIdentityHeaders, normalizePrintableHeaderValue } from "../proxy/identity.js";
 import { inspectJwt } from "../auth/jwt-age.js";
 import { credentialString, type Credential } from "../auth/types.js";
-import type { ProxyConfig } from "../config/types.js";
+import type { ProxyConfig, ProxyIdentity } from "../config/types.js";
 import { errorResponse } from "../proxy/handler.js";
 
 export interface QuotaBalanceEntry {
@@ -145,6 +145,70 @@ function toFiniteNumber(v: unknown): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
+/** Platform fingerprint the billing gateway expects (`${platform}-${arch}`), reconstructed from the observed claim-client format. Reuses identity.ts's env-override normalization (same ZCODE_IDENTITY_PLATFORM/ARCH overrides the proxy headers use — Android seeds linux-x64 via index.ts); empty or non-printable overrides fall back to the real values — an empty override must not yield `-x64`/`linux-`. */
+function billingPlatform(): string {
+  return `${normalizePrintableHeaderValue(process.env.ZCODE_IDENTITY_PLATFORM) ?? process.platform}-${normalizePrintableHeaderValue(process.env.ZCODE_IDENTITY_ARCH) ?? os.arch()}`;
+}
+
+/** Billing-plane request headers: desktop identity fingerprint plus the plan JWT bearer. The claim client drops X-ZCode-Agent for zcode.z.ai control-plane calls; the billing gateway follows the same precedent. */
+function billingHeaders(jwt: string, identity: ProxyIdentity): Record<string, string> {
+  const idHeaders = buildIdentityHeaders(identity);
+  delete idHeaders["X-ZCode-Agent"];
+  return { ...idHeaders, authorization: `Bearer ${jwt}`, Accept: "application/json" };
+}
+
+/** Billing path with the app fingerprint query parameters the gateway expects. */
+function billingPath(path: string, appVersion: string): string {
+  return `${path}?app_version=${encodeURIComponent(appVersion)}&platform=${encodeURIComponent(billingPlatform())}`;
+}
+
+/** Normalize `data.balances[]`; camelCase aliases are observed live alongside snake_case, accept both so neither casing drops the field. */
+function parseBalanceEntries(data: unknown): QuotaBalanceEntry[] {
+  const balances: QuotaBalanceEntry[] = [];
+  const rows = (data ?? {}) as { balances?: any[] };
+  for (const b of Array.isArray(rows.balances) ? rows.balances : []) {
+    const expiresAt = toFiniteNumber(b.expires_at ?? b.expiresAt);
+    const unitType = b.unit_type ?? b.unitType;
+    balances.push({
+      showName: String(b.show_name ?? ""),
+      remainingUnits: toFiniteNumber(b.remaining_units ?? b.remainingUnits) ?? 0,
+      totalUnits: toFiniteNumber(b.total_units ?? b.totalUnits) ?? 0,
+      usedUnits: toFiniteNumber(b.used_units ?? b.usedUnits) ?? 0,
+      ...(unitType ? { unitType: String(unitType) } : {}),
+      ...(expiresAt !== undefined ? { expiresAt } : {}),
+    });
+  }
+  return balances;
+}
+
+/** Result of one credits-plane probe for the plan auto-switch watcher. */
+export interface StartPlanBalance {
+  ok: boolean;
+  balances: QuotaBalanceEntry[];
+  error?: string;
+}
+
+/**
+ * Probe the start-plan credits plane (`billing/balance`) only — the light poll
+ * the plan auto-switch watcher runs every few minutes. Returns null when the
+ * stored credential has no plan JWT (credits plane unavailable; the caller
+ * treats it as "cannot serve start-plan").
+ */
+export async function fetchStartPlanBalance(
+  config: ProxyConfig,
+  fetchImpl: typeof fetch = fetch,
+  loadCredentialImpl: typeof loadCredential = loadCredential,
+): Promise<StartPlanBalance | null> {
+  const cred = await loadCredentialImpl().catch(() => null);
+  if (!cred?.jwt) return null;
+  const origin = config.claim.origin || "https://zcode.z.ai";
+  const env = await fetchBilling(origin, billingPath("/api/v1/zcode-plan/billing/balance", config.identity.appVersion), billingHeaders(cred.jwt, config.identity), fetchImpl);
+  if (!env || !isSuccessfulEnvelope(env)) {
+    return { ok: false, balances: [], error: `balance: ${env ? `${env.code} ${env.msg ?? ""}`.trim() : "request failed"}` };
+  }
+  return { ok: true, balances: parseBalanceEntries(env.data) };
+}
+
 /** Build the quota snapshot. Exported for tests. `loadCredentialImpl` is injectable for tests. */
 export async function collectQuotaSnapshot(
   config: ProxyConfig,
@@ -159,22 +223,8 @@ export async function collectQuotaSnapshot(
   const jwt = jwtInfo
     ? { ageHours: Number(jwtInfo.ageHours.toFixed(2)), issuedAt: jwtInfo.iat }
     : null;
-  const identity = config.identity;
-  const idHeaders = buildIdentityHeaders(identity);
-  // The claim client drops X-ZCode-Agent for zcode.z.ai control-plane calls;
-  // the billing gateway follows the same precedent.
-  delete idHeaders["X-ZCode-Agent"];
-  const headers: Record<string, string> = { ...idHeaders, authorization: `Bearer ${cred.jwt}`, Accept: "application/json" };
-  // Billing fingerprint is reconstructed from the observed claim-client format
-  // (`${platform}-${arch}`). Reuses identity.ts's env-override normalization
-  // (same ZCODE_IDENTITY_PLATFORM/ARCH overrides the proxy headers use —
-  // Android seeds linux-x64 via index.ts); empty or non-printable overrides
-  // fall back to the real values — an empty override must not yield
-  // `-x64`/`linux-`.
-  // NOTE: ProxyIdentity has no platform/arch fields — do not read them off `identity`.
-  const platform = `${normalizePrintableHeaderValue(process.env.ZCODE_IDENTITY_PLATFORM) ?? process.platform}-${normalizePrintableHeaderValue(process.env.ZCODE_IDENTITY_ARCH) ?? os.arch()}`;
+  const headers = cred.jwt ? billingHeaders(cred.jwt, config.identity) : {};
   const origin = config.claim.origin || "https://zcode.z.ai";
-  const appVersion = identity.appVersion;
 
   const errors: string[] = [];
   // Credits plane needs the plan JWT; a coding-plan account without one still
@@ -183,8 +233,8 @@ export async function collectQuotaSnapshot(
   let preview: Awaited<ReturnType<typeof fetchBilling>> = null;
   if (cred.jwt) {
     [balance, preview] = await Promise.all([
-      fetchBilling(origin, `/api/v1/zcode-plan/billing/balance?app_version=${encodeURIComponent(appVersion)}&platform=${encodeURIComponent(platform)}`, headers, fetchImpl),
-      fetchBilling(origin, `/api/v1/zcode-plan/billing/preview?app_version=${encodeURIComponent(appVersion)}&platform=${encodeURIComponent(platform)}`, headers, fetchImpl),
+      fetchBilling(origin, billingPath("/api/v1/zcode-plan/billing/balance", config.identity.appVersion), headers, fetchImpl),
+      fetchBilling(origin, billingPath("/api/v1/zcode-plan/billing/preview", config.identity.appVersion), headers, fetchImpl),
     ]);
     if (balance && !isSuccessfulEnvelope(balance)) errors.push(`balance: ${balance.code} ${balance.msg ?? ""}`.trim());
     if (preview && !isSuccessfulEnvelope(preview)) errors.push(`preview: ${preview.code} ${preview.msg ?? ""}`.trim());
@@ -214,22 +264,8 @@ export async function collectQuotaSnapshot(
     }
   }
 
-  const balances: QuotaBalanceEntry[] = [];
-  const balanceData = (balance?.data ?? {}) as { balances?: any[]; server_time?: number };
-  for (const b of Array.isArray(balanceData.balances) ? balanceData.balances : []) {
-    // unitType/expiresAt camelCase aliases observed live alongside snake_case;
-    // accept both so neither casing drops the field.
-    const expiresAt = toFiniteNumber(b.expires_at ?? b.expiresAt);
-    const unitType = b.unit_type ?? b.unitType;
-    balances.push({
-      showName: String(b.show_name ?? ""),
-      remainingUnits: toFiniteNumber(b.remaining_units ?? b.remainingUnits) ?? 0,
-      totalUnits: toFiniteNumber(b.total_units ?? b.totalUnits) ?? 0,
-      usedUnits: toFiniteNumber(b.used_units ?? b.usedUnits) ?? 0,
-      ...(unitType ? { unitType: String(unitType) } : {}),
-      ...(expiresAt !== undefined ? { expiresAt } : {}),
-    });
-  }
+  const balanceData = (balance?.data ?? {}) as { server_time?: number };
+  const balances = parseBalanceEntries(balance?.data);
 
   const claimablePlans: QuotaPlanEntry[] = [];
   const previewData = (preview?.data ?? {}) as { plans?: any[] };
