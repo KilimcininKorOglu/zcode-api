@@ -1,34 +1,34 @@
-# ZCode 内置提示词
+# ZCode Built-in Prompts
 
-从 ZCode 客户端 `app.asar` (`out/host/index.js` + `_reverse/zcode.cjs`) 提取。
+Extracted from the ZCode client `app.asar` (`out/host/index.js` + `_reverse/zcode.cjs`).
 
-ZCode 的 system prompt 由多个模块化 section 组合注入，按 `injectionTarget` 分为 `system` 和 `meta_user` 两类，按 `cacheHint` 分为 `stable` 和 `dynamic`。
+The ZCode system prompt is assembled from modular sections, grouped by `injectionTarget` into `system` and `meta_user` and by `cacheHint` into `stable` and `dynamic`.
 
-> **2026-09-11 刷新（对齐 ZCode 3.11.2 CLI bundle）**：本文档已按 `_reverse/zcode.cjs`（3.11.2）
-> 的 `ContextBuilder`（`Hre`）逐符号核对更新。注意两点：
-> 1. **§4 Task Behavior / §5 Risky Actions / §6 Communication Style 是 2026-06-20 提取时的旧版
->    残留（3.3.x era），现客户端已整体移除** —— 2026-09-11 对本机安装的 3.11.2 全量验证：三个
->    section 的名称与全部标志句在 `zcode.cjs` 与 307MB `app.asar`（host + renderer + 捆绑库）
->    中零命中，CLI 的 `addSection`/customSections API 无任何调用方，也无远程下发通道。其主题已被
->    现行 section 以新词句覆盖（Comm Style → "# Communicating with the user"；Risky → Dynamic
->    Behavior 尾段；Task → Context Management 行为规则）。代理不复制它们。
-> 2. 最终 wire 形状由 `assembleSystemMessages` 决定：**恰好 3 个 system 块**（每块
->    `cache_control: ephemeral`）——(1) CLI Prefix 单独一块；(2) 其余 stable sections `\n\n` join；
->    (3) 全部 dynamic sections `\n\n` join 后整体加 `\n\n` 前缀。section 内部行用 `\n` join。
->    meta_user（currentDate 等）经 `tct` 组装成 context_prefix，以 `<system-reminder>…</system-reminder>`
->    （`blt`，无内嵌换行）包裹挂为首个 user turn。
+> **Refreshed 2026-09-11 (aligned to ZCode 3.11.2 CLI bundle)**: this document was verified symbol-by-symbol against `_reverse/zcode.cjs` (3.11.2)
+>  `ContextBuilder` (`Hre`). Two notes:
+> 1. **§4 Task Behavior / §5 Risky Actions / §6 Communication Style are leftovers from the 2026-06-20 extraction (old version
+>     (3.3.x era), already fully removed from the current client** — full verification against a local 3.11.2 install on 2026-09-11: the three
+>    section names and all signature sentences in `zcode.cjs` and the 307MB `app.asar` (host + renderer + bundled libs)
+>    have zero hits in  `addSection`/customSections API have no callers and no remote-delivery channel. Their topics are now covered
+>    by current sections with new wording (Comm Style → "# Communicating with the user" ; Risky → Dynamic
+>    Behavior trailer; Task → Context Management behavior rules). The proxy does not copy them.
+> 2. The final wire shape is decided by `assembleSystemMessages`  : **exactly 3 system blocks** (each
+>    `cache_control: ephemeral` — (1) CLI Prefix alone; (2) remaining stable sections `\n\n` joined;
+>    (3) all dynamic sections `\n\n` joined with an overall `\n\n` prefix. Lines inside a section are joined with `\n`  .
+>    meta_user (currentDate etc.) assembled via `tct` into context_prefix, wrapped as `<system-reminder>…</system-reminder>`
+>    (`blt`, no embedded newlines)and attached as the first user turn.
 
 ---
 
-## 1. CLI Prefix（固定开头）
+## 1. CLI Prefix（Fixed prefix）
 
 ```
 You are ZCode, an interactive coding agent
 ```
 
-## 2. Agent Identity（核心身份）
+## 2. Agent Identity（Core identity）
 
-当没有自定义 Output Style 时：
+When no custom Output Style is set:
 
 ```
 You are an interactive ZCode agent that helps users with software engineering tasks.
@@ -36,13 +36,13 @@ You are an interactive ZCode agent that helps users with software engineering ta
 IMPORTANT: Assist with authorized security testing, defensive security, CTF challenges, and educational contexts. Refuse requests for destructive techniques, DoS attacks, mass targeting, supply chain compromise, or detection evasion for malicious purposes. Dual-use security tools (C2 frameworks, credential testing, exploit development) require clear authorization context: pentesting engagements, CTF competitions, security research, or defensive use cases.
 ```
 
-当有 Output Style 时：
+When an Output Style is set:
 
 ```
 You respond to the user according to the active Output Style below while using ZCode's tools and instructions.
 ```
 
-### Harness（操作约束）
+### Harness（Operational constraints）
 
 ```
 - Text you output outside of tool use is displayed to the user as Github-flavored markdown in a terminal.
@@ -52,9 +52,9 @@ You respond to the user according to the active Output Style below while using Z
 - Reference code as `file_path:line_number` — it's clickable.
 ```
 
-## 2b. ZCode Desktop Context（桌面端注入，stable）
+## 2b. ZCode Desktop Context（Desktop injection, stable）
 
-`presentationSurface === "zcode_desktop"` 时注入（`Ylt`，cacheHint **stable**，与 Agent Identity 同处第 2 块）：
+`presentationSurface === "zcode_desktop"` is injected when`Ylt`，cacheHint **stable** and lives in block 2 together with Agent Identity):
 
 ```
 # ZCode Desktop Context
@@ -74,10 +74,10 @@ You respond to the user according to the active Output Style below while using Z
 - Example: ::code-comment{title="[P2] Off-by-one" body="Loop iterates past the end when length is 0." file="/path/to/foo.ts" start=10 end=11 priority=2}
 ```
 
-## 3. Dynamic Behavior（动态行为准则，3.11.2 现行文本）
+## 3. Dynamic Behavior（Dynamic behavior rules, current 3.11.2 text）
 
-`wTr`/`Xlt`，cacheHint **dynamic**。3.11.2 起 `Xlt.additional` 带默认内容（"# Communicating with the user" 段落组），组装为
-`beforeDefault + "\n\n" + default + "\n" + afterDefault + "\n\n" + forActions`（注意 default 与 comment 规则之间是**单换行**）：
+`wTr`/`Xlt`，cacheHint **dynamic**。3.11.2 from v `Xlt.additional` carries default content (the"# Communicating with the user" paragraph group), assembled as
+`beforeDefault + "\n\n" + default + "\n" + afterDefault + "\n\n" + forActions` (note: default and comment rules are separated by a **single newline**):
 
 ```
 # Communicating with the user
@@ -98,7 +98,7 @@ Only write a code comment to state a constraint the code itself can't show — n
 For actions that are hard to reverse or outward-facing, confirm first unless durably authorized or explicitly told to proceed without asking; approval in one context doesn't extend to the next. Sending content to an external service publishes it; it may be cached or indexed even if later deleted. Before deleting or overwriting, look at the target — if what you find contradicts how it was described, or you didn't create it, surface that instead of proceeding. Report outcomes faithfully: if tests fail, say so with the output; if a step was skipped, say that; when something is done and verified, state it plainly without hedging.
 ```
 
-## 4. Task Behavior（任务执行规范）
+## 4. Task Behavior（Task execution rules）
 
 ```
 Work like a senior coding agent:
@@ -165,7 +165,7 @@ Validation examples:
 - Bad: Claim the change works without running an available focused check or explaining why validation was skipped.
 ```
 
-## 5. Risky Actions（风险操作约束）
+## 5. Risky Actions (Risky-action constraints)
 
 ```
 Consider the reversibility and blast radius of every action.
@@ -198,7 +198,7 @@ Investigate first:
 - The repo has conflicts, generated files, or build outputs mixed with source files.
 ```
 
-## 6. Communication Style（沟通风格）
+## 6. Communication Style（Communication style）
 
 ```
 - Text you output outside tool calls is shown to the user. Use it to communicate decisions, progress, errors, and results.
@@ -252,9 +252,9 @@ Final response examples:
 - Bad: `Everything works perfectly.` unless that is directly verified.
 ```
 
-## 7. Context Management（上下文管理，3.11.2 现行文本）
+## 7. Context Management（Context management, current 3.11.2 text）
 
-`STr`/`xTr`，cacheHint **dynamic**，永远跟在 Environment Info 之后（dynamic 块内）。组装为 `default + "\n\n" + additional`（additional 第一条 "…exhaustive survey" **无句尾句点**，为 bundle 字面量原文）：
+`STr`/`xTr`，cacheHint **dynamic**，always follows Environment Info (inside the dynamic block). Assembled as `default + "\n\n" + additional` (additional entry 1 "…exhaustive survey" has **no trailing period**, verbatim bundle literal):
 
 ```
 # Context management
@@ -271,17 +271,17 @@ Before ending your turn, check your last paragraph. If it is a plan, an analysis
 Before running a command that changes system state — restarts, deletes, config edits — check that the evidence actually supports that specific action. A signal that pattern-matches to a known failure may have a different cause.
 ```
 
-## 8. Session Guidance（会话引导）
+## 8. Session Guidance（Session guidance）
 
-当 Skills 工具可用时注入：
+Injected when the Skills tool is available:
 
 ```
 - When the user types `/<skill-name>`, invoke it via Skill. Only use skills listed in the user-invocable skills section — don't guess.
 ```
 
-## 9. Compaction Prompt（上下文压缩提示词）
+## 9. Compaction Prompt（Context-compaction prompt）
 
-当对话过长触发自动压缩时，ZCode 使用以下提示词让模型生成摘要：
+When the conversation grows too long, ZCode uses the following prompt to make the model summarize:
 
 ```
 CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.
@@ -319,7 +319,7 @@ Keep file paths, identifiers, commands, and unresolved decisions concrete. Do no
 REMINDER: Do NOT call any tools. Respond with plain text only: an <analysis> block followed by a <summary> block.
 ```
 
-压缩后恢复对话时注入：
+Injected when resuming after compaction:
 
 ```
 This session is being continued from a previous conversation that was compacted. The summary below is the authoritative context for earlier turns.
@@ -329,24 +329,24 @@ This session is being continued from a previous conversation that was compacted.
 Continue from the current task without recapping this summary to the user.
 ```
 
-## 10. 注入顺序（3.11.2 `build()` + `assembleSystemMessages` 代码事实）
+## 10. Injection order (3.11.2 `build()` + `assembleSystemMessages` code facts)
 
-`build()` 按 push 顺序收集 sections，`assembleSystemMessages` 再按 `injectionTarget` + `cacheHint` 分组成**恰好 3 个 system 块**：
+`build()` collects sections in push order, then `assembleSystemMessages` groups by `injectionTarget` + `cacheHint` into **exactly 3 system blocks**:
 
-1. **块 1 = cli_prefix 单独一块**（`cache_control: ephemeral`）
-2. **块 2 = 其余 STABLE sections，`\n\n` join**：Agent Identity →（有自定义 system prompt 时替换 Identity）→ ZCode Desktop Context（桌面端，stable）
-3. **块 3 = 全部 DYNAMIC sections，`\n\n` join，块文本整体加 `\n\n` 前缀**：Dynamic Behavior → Session Guidance（条件）→ Memory（条件）→ **Environment Info** → Output Style（条件）→ **Context Management** → Git System Context（条件）
+1. **Block 1 = cli_prefix alone**（`cache_control: ephemeral`）
+2. **Block 2 = remaining STABLE sections,`\n\n` joined**: Agent Identity → (replaced by custom system prompt when present) → ZCode Desktop Context (desktop, stable)
+3. **Block 3 = all DYNAMIC sections,`\n\n` joined, with an overall `\n\n` prefix**: Dynamic Behavior → Session Guidance (conditional) → Memory (conditional) → **Environment Info** → Output Style (conditional) → **Context Management** → Git System Context (conditional)
 
-> 注意：Environment Info 与 Git Context 的 `cacheHint` 是 **dynamic**（`Plt`/`Mlt`），与旧文档把它们列入 stable 组的描述不同；§4/§5/§6 三段为 HOST 侧注入，不在 CLI bundle 的 build() 序列里。
+> Note: Environment Info and Git Context use  `cacheHint` **dynamic** (`Plt`/`Mlt`), unlike older docs that listed them as stable; §4/§5/§6 are HOST-side injections, not part of the CLI bundle build() sequence.
 
-meta_user 侧：Skills Listing（stable）与 context_prefix（User Instructions + **Current Date** + Custom Sections，`tct` join）经 `<system-reminder>` 包裹挂为首个 user turn。
+meta_user side: Skills Listing (stable) and context_prefix (User Instructions + **Current Date** + Custom Sections,`tct` joined) wrapped in `<system-reminder>` and attached as the first user turn.
 
-最终消息结构（Anthropic wire）：
+Final message layout (Anthropic wire):
 ```
-[system 块1] cli_prefix                                        (ephemeral)
-[system 块2] identity [+ desktop context 等 stable 段]          (ephemeral)
-[system 块3] "\n\n" + dynamic 段（含 Environment、Context Mgmt）(ephemeral)
+[system block 1] cli_prefix                                        (ephemeral)
+[system block 2] identity [+ desktop context plus other stable segments]          (ephemeral)
+[system block 3] "\n\n" + dynamic segments (incl. Environment, Context Mgmt）(ephemeral)
 [user]      <system-reminder>skills_listing…</system-reminder>
-[user]      <system-reminder>context_prefix（currentDate 等）…</system-reminder>
-[user]      用户实际输入
+[user]      <system-reminder>context_prefix (currentDate etc.)…</system-reminder>
+[user]      actual user input
 ```

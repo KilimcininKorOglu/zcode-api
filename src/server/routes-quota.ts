@@ -13,7 +13,7 @@
  * The billing gateway requires a stable `X-Device-Mid`, so the config identity
  * is forwarded unchanged.
  *
- * @see _reverse/NOTEPAD.md "coding-plan 用量平面" (chain extracted from
+ * @see _reverse/NOTEPAD.md "coding-plan usage plane" (chain extracted from
  *      zcode.z.ai desktop bundle `getSnapshotForQuery`/`BigModelUsageQuotaProvider`)
  */
 import os from "node:os";

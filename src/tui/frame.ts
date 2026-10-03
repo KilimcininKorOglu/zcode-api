@@ -296,9 +296,9 @@ const BAR_PARTIALS = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
 const BAR_W = 10;
 
 /**
- * 括号进度条（htop/wget 同款终端原生样式）：`[████▋░░░░░]`。填充 = 阈值色，
- * 轨道与括号 = DIM 灰；末格用 1/8 分块字符（▏▎▍▌▋▊▉）做亚格平滑边缘。
- * frac 缺位时画空轨道（DIM）——占位但不上色。
+ * Bracket progress bar (native terminal style like htop/wget): `[████▋░░░░░]`. Fill = threshold color,
+ * track and brackets = DIM gray; the last cell uses 1/8 block chars (▏▎▍▌▋▊▉) for sub-cell smooth edges.
+ * When frac is missing, draw an empty track (DIM) — placeholder without color.
  */
 function quotaBar(frac: number | undefined, color: string): Seg[] {
   const cells = frac === undefined ? 0 : Math.max(0, Math.min(1, frac)) * BAR_W;
@@ -314,47 +314,47 @@ function quotaBar(frac: number | undefined, color: string): Seg[] {
   ];
 }
 
-/** 名称列按显示宽度补空格 —— 两组行的条形起点对齐同一列。 */
+/** Pad the name column by display width — bar starts align in the same column across row groups. */
 function padName(t: string): string {
   const NAME_W = 13;
   const pad = NAME_W - displayWidth(t);
   return pad > 0 ? t + " ".repeat(pad) : t;
 }
 
-/** 剩余占比阈值色（GitHub dark 色系，与 Android 端同语义）：≤10% danger / ≤30% warning / 其余 success。 */
+/** Threshold color for remaining ratio (GitHub dark palette, same semantics as Android): ≤10% danger / ≤30% warning / else success. */
 function fracColor(frac: number): string {
   return frac <= 0.1 ? BAR_RED : frac <= 0.3 ? BAR_AMBER : BAR_GREEN;
 }
 
-/** 重置倒计时：`4h 30m后重置` / `3d 06h后重置` / `12m后重置` / 已到点 `即将重置`。 */
+/** Reset countdown: `in 4h 30m` / `in 3d 06h` / `in 12m` / due `resetting soon`. */
 function fmtResetCountdown(nextResetTime: number, nowMs: number): string {
   const diff = toEpochMs(nextResetTime) - nowMs;
-  if (diff <= 0) return "即将重置";
+  if (diff <= 0) return "resetting soon";
   const m = Math.floor(diff / 60000);
-  if (m < 60) return `${m}m后重置`;
-  if (m < 1440) return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m后重置`;
-  return `${Math.floor(m / 1440)}d ${String(Math.floor((m % 1440) / 60)).padStart(2, "0")}h后重置`;
+  if (m < 60) return `in ${m}m`;
+  if (m < 1440) return `in ${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
+  return `in ${Math.floor(m / 1440)}d ${String(Math.floor((m % 1440) / 60)).padStart(2, "0")}h`;
 }
 
 function friendlyWindowType(type: string): string {
   if (type === "TOKENS_LIMIT") return "Token";
-  if (type === "TIME_LIMIT") return "周期";
+  if (type === "TIME_LIMIT") return "Cycle";
   return type;
 }
 
 /**
- * 窗口语义名：按重置升序的位次 + horizon 校验（5h → 每周 → 月度）。
- * 实弹钉死（2026-09-30，max 档）：三窗口重置分别在 4h30m / 3d18h / 14d，
- * 正好落三个位次 —— 永不裸显 TIME_LIMIT/TOKENS_LIMIT。位次与 horizon 不符
- * 时诚实降级为周期/类型名，不硬贴语义。
+ * Window semantic name: rank by ascending reset time + horizon check (5h → weekly → monthly).
+ * Pinned with live data (2026-09-30, max tier): the three windows reset in 4h30m / 3d18h / 14d,
+ * landing exactly on the three ranks — never show raw TIME_LIMIT/TOKENS_LIMIT. When rank and
+ * horizon disagree, honestly fall back to the cycle/type name instead of forcing a label.
  */
 function codingWindowLabel(type: string, nextResetTime: number | undefined, pos: number, nowMs: number): string {
   const horizon = nextResetTime !== undefined ? toEpochMs(nextResetTime) - nowMs : undefined;
-  if (pos === 0 && horizon !== undefined && horizon <= 6 * 3600e3) return "5 小时";
-  if (pos === 1 && horizon !== undefined && horizon <= 8 * 86400e3) return "每周";
-  if (pos === 2 && horizon !== undefined && horizon <= 45 * 86400e3) return "月度";
+  if (pos === 0 && horizon !== undefined && horizon <= 6 * 3600e3) return "5h";
+  if (pos === 1 && horizon !== undefined && horizon <= 8 * 86400e3) return "Weekly";
+  if (pos === 2 && horizon !== undefined && horizon <= 45 * 86400e3) return "Monthly";
   if (horizon === undefined) return friendlyWindowType(type);
-  return horizon >= 0 && horizon <= 45 * 86400e3 ? "月度" : "周期";
+  return horizon >= 0 && horizon <= 45 * 86400e3 ? "Monthly" : "Cycle";
 }
 
 /** At most this many per-model balance rows — the card must stay bounded so the Logs card keeps room on short terminals. */
@@ -508,9 +508,9 @@ export function buildFrame(s: FrameState): Frame {
           const barColor = frac !== undefined ? fracColor(frac) : BAR_GREEN;
           const value =
             c.remaining !== undefined
-              ? `剩 ${fmtUnits(c.remaining)}${c.unit ? ` ${c.unit}` : " 次"}`
+              ? `${fmtUnits(c.remaining)}${c.unit ? ` ${c.unit}` : " left"}`
               : frac !== undefined
-                ? `剩 ${Math.round(frac * 100)}%`
+                ? `${Math.round(frac * 100)}% left`
                 : "—";
           const reset = c.nextResetTime !== undefined ? fmtResetCountdown(c.nextResetTime, nowMs) : "";
           return {

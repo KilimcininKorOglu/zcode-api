@@ -15,7 +15,7 @@ export const ZAI_PROVIDER: ProviderDef = {
 
 export const BIGMODEL_PROVIDER: ProviderDef = {
   id: "bigmodel",
-  displayName: "BigModel / 智谱",
+  displayName: "BigModel / Zhipu",
   anthropicBaseURL: "https://open.bigmodel.cn/api/anthropic",
   openaiBaseURL: "https://open.bigmodel.cn/api/coding/paas/v4",
   bizHost: "https://open.bigmodel.cn",

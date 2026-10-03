@@ -3,8 +3,8 @@ import type { ProviderId } from "../provider/types.js";
 import type { FetchFn } from "./oauth.js";
 
 const ZAI_API_KEY_NAME = "zcode-api-key";
-const DEFAULT_ORG_MARKER = "\u9ED8\u8BA4\u673A\u6784"; // 默认机构
-const DEFAULT_PROJECT_MARKER = "\u9ED8\u8BA4\u9879\u76EE"; // 默认项目
+const DEFAULT_ORG_MARKER = "\u9ED8\u8BA4\u673A\u6784"; // "default organization"
+const DEFAULT_PROJECT_MARKER = "\u9ED8\u8BA4\u9879\u76EE"; // "default project"
 
 async function requestBizApi(
   fetchImpl: FetchFn,

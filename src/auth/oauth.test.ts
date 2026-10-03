@@ -7,7 +7,7 @@
  * keeps the classic auth-code flow for the headless `--paste` login. All
  * upstream calls are mocked via `fetchImpl` injection.
  *
- * @see _reverse/NOTEPAD.md "4. OAuth 流程"
+ * @see _reverse/NOTEPAD.md "4. OAuth flow"
  */
 import { describe, it, expect } from "bun:test";
 import {

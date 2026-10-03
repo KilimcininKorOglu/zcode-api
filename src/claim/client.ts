@@ -27,7 +27,7 @@
  * `deviceMid` is provided both calls append `X-Device-Mid` (last position,
  * matching its slot in the endpoint-routing `TV` identity set).
  *
- * @see _reverse/NOTEPAD.md "claim/billing 平面"
+ * @see _reverse/NOTEPAD.md "claim/billing plane"
  */
 import type { ClaimablePlan, ClaimOutcome, PlanEntitlement } from "./types.js";
 import { classifyClaimCode } from "./types.js";

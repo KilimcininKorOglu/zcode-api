@@ -388,7 +388,7 @@ async function dispatch(
     case "quota": {
       // Snapshot build hits both upstream quota planes (billing + monitor);
       // a failure (e.g. not logged in) surfaces verbatim as the envelope error
-      // so the app can render 点按重试 instead of an empty card.
+      // so the app can render "tap to retry" instead of an empty card.
       if (!ctx.onQuota) return { ok: false, error: "quota_unavailable" };
       try {
         const quota = await ctx.onQuota();

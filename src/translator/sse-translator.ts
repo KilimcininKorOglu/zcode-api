@@ -168,7 +168,7 @@ export function anthropicSseToOpenaiSse(
       } catch (err) {
         errored = true;
         void reader.cancel(err).catch(() => {});
-        // error()/close() 互斥:errored 流上再 close() 会抛 TypeError,进而触发 Bun 引擎空指针崩溃。
+        // error()/close() are mutually exclusive: calling close() on an errored stream throws TypeError, which can trigger a null-pointer crash in the Bun engine.
         try { controller.error(err); } catch {}
       } finally {
         if (!errored) {
@@ -606,7 +606,7 @@ export function openaiSseToAnthropicSse(
         finalizeStream();
       } catch (err) {
         errored = true;
-        // error()/close() 互斥:errored 流上再 close() 会抛 TypeError,进而触发 Bun 引擎空指针崩溃。
+        // error()/close() are mutually exclusive: calling close() on an errored stream throws TypeError, which can trigger a null-pointer crash in the Bun engine.
         try { controller.error(err); } catch {}
       } finally {
         if (!errored) {

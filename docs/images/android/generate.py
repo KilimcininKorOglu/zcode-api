@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-按 Android-APP/app/src/main/java/com/zcode/proxy/MainActivity.kt 的 Compose 结构
-逐组件复刻 UI，生成 SVG（1080×2400，density 3，1dp=3px，1sp=3px），
-再用 Chrome headless 渲染为 PNG。
+Replicates the Compose structure of Android-APP/app/src/main/java/com/zcode/proxy/MainActivity.kt
+component by component, generating SVGs (1080x2400, density 3, 1dp=3px, 1sp=3px),
+then rendering them to PNG with headless Chrome.
 
-结构映射（.kt → 本脚本函数）：
+Structure mapping (.kt -> functions in this script):
   AppScreen/Box+Column        → screen()
   TopBar                      → top_bar()
   HeroCard                    → hero_card()
@@ -14,15 +14,15 @@
   LogsScreen                  → logs_screen()
   SettingsScreen/CardBlock/SettingRow → settings_screen()
   NavItem                     → nav_item()
-  SegChip / StatusDot / Sparkline / CopyGlyph → 同名函数
-颜色取自 ui/theme/Color.kt 的中国传统色 token。
+  SegChip / StatusDot / Sparkline / CopyGlyph -> same-named functions
+Colors come from the traditional-Chinese-color tokens in ui/theme/Color.kt.
 
-字体对照 Type.kt（2026-09-09 真机截图校正）：
-  - AppTypography = Typography() → 默认字体族 = 设备系统字体；用户的手机
-    系统字体为衬线（宋体风格），故常规文本用 Times New Roman + SimSun 复刻。
-  - Mono = JetBrains Mono（res/font 打包，CJK 回落系统字体），此处直接内嵌
-    Android-APP 里的 ttf（@font-face 相对引用 ./fonts/）。
-  - 真机为 edge-to-edge，应用不绘制状态栏内容 → 不画假状态栏。
+Fonts mirror Type.kt (calibrated against 2026-09-09 device screenshots):
+  - AppTypography = Typography() -> default family = device system font; the user phone
+    system font is serif (Song style), so body text is replicated with Times New Roman + SimSun.
+  - Mono = JetBrains Mono (bundled in res/font, CJK falls back to system fonts), inlined here directly from
+    Android-APP  ttf files (@font-face relative refs to ./fonts/).
+  - Devices are edge-to-edge and the app draws no status-bar content -> draw no fake status bar.
 """
 import base64
 import io
@@ -39,7 +39,7 @@ _icon.save(_buf, "PNG")
 ICON_B64 = base64.b64encode(_buf.getvalue()).decode()
 
 SERIF = "'Times New Roman','SimSun',serif"
-MONO = "'JetBrains Mono','SimSun',serif"   # CJK 字形回落系统字体（与设备一致）
+MONO = "'JetBrains Mono','SimSun',serif"   # CJK glyphs fall back to system fonts (same as device)
 
 FONT_FACES = f"""<style>
 @font-face{{font-family:'JetBrains Mono';font-weight:400;src:url('fonts/jetbrainsmono_regular.ttf')}}
@@ -47,7 +47,7 @@ FONT_FACES = f"""<style>
 @font-face{{font-family:'JetBrains Mono';font-weight:700;src:url('fonts/jetbrainsmono_bold.ttf')}}
 </style>"""
 
-# ── Color.kt 亮/暗 token ─────────────────────────────────────────────
+# ── Color.kt light/dark tokens ─────────────────────────────────────────────
 class Pal:
     def __init__(self, d):
         self.__dict__.update(d)
@@ -77,9 +77,9 @@ class SVG:
         self.e = []
 
     def rect(self, x, y, w, h, rx, fill, stroke=None, sw=0, fo=1.0, so=1.0):
-        # Compose 的 RoundedCornerShape(50) 是「半径=短边一半」的真胶囊；SVG 只给 rx
-        # 时 ry 钳到 h/2 而 rx 不钳（rx>h/2 会画成扁椭圆端）—— 必须显式钳到
-        # min(w/2, h/2) 才与真机形状一致。
+        # Compose RoundedCornerShape(50) is a true pill with radius = half the short edge; SVG with only rx
+        # clamps ry to h/2 but not rx (rx>h/2 draws squashed ellipse ends) — must clamp explicitly to
+        # min(w/2, h/2) to match the real device shape.
         rx = min(rx, w / 2.0, h / 2.0)
         s = f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}" rx="{rx:.1f}" fill="{fill}"'
         if fo < 1: s += f' fill-opacity="{fo:.2f}"'
@@ -110,7 +110,7 @@ class SVG:
                       f'stroke-opacity="{fo:.2f}" stroke-linecap="round" stroke-linejoin="round"/>')
 
     def icon24(self, name, x, y, size, color):
-        """Material filled 图标，24dp viewBox 缩放到 size。"""
+        """Material filled icon, 24dp viewBox scaled to size."""
         P = {
             "home": "M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z",
             "menu": "M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z",
@@ -133,10 +133,10 @@ class SVG:
         with open(path, "w", encoding="utf-8") as f:
             f.write(svg)
 
-# ── 组件（对应 .kt 同名 Composable）──────────────────────────────────
+# ── Components (same names as the .kt Composables) ──────────────────────────────────
 
 def top_bar(s, pal, dark, subtitle):
-    y = dp(20 + 8)  # 顶部留白 + vertical 8
+    y = dp(20 + 8)  # top padding + vertical 8
     ic = dp(40)
     s.rect(dp(16), y, ic, ic, dp(10), pal.scHigh if dark else "none",
            stroke=pal.outlineVariant if dark else None, sw=dp(1))
@@ -149,11 +149,11 @@ def top_bar(s, pal, dark, subtitle):
 
 def status_dot(s, pal, cx, cy, color, pulse):
     if pulse:
-        s.circle(cx, cy, dp(12), color, fo=0.25)  # 呼吸外环（静态取中值）
+        s.circle(cx, cy, dp(12), color, fo=0.25)  # breathing outer ring (static mid value)
     s.circle(cx, cy, dp(6), color)
 
 def sparkline(s, pal, x, y, w, h, data, color):
-    """Sparkline 逻辑：data<2 画半高空线；否则折线+0.14 面积+末点呼吸。"""
+    """Sparkline logic: data<2 draws a half-height empty line; otherwise polyline + 0.14 area + breathing end dot."""
     if len(data) < 2:
         s.line(x, y + h / 2, x + w, y + h / 2, color, dp(1.33), fo=0.3, cap="round")
         return
@@ -180,7 +180,7 @@ def pill(s, x, y, label, size_sp, fill, fg, mono=False, weight=600, stroke=None,
     return tw, h
 
 def quota_row(s, pal, x, y, w, label, value, frac, warn=0, reset="", striped=False):
-    """QuotaRow：标签 + 6dp 圆角条（实心=剩余占比 / 条纹=时间进度兜底）+ 右列两行。"""
+    """QuotaRow: label + 6dp rounded bar (solid = remaining ratio / striped = time-progress fallback) + two right-column lines."""
     bar_color = pal.primary if warn == 0 else (_WARNING(pal) if warn == 1 else pal.error)
     s.text(x, y + dp(8), label, dp(12), pal.onPrimaryContainer, weight=600)
     bx = x + dp(46)
@@ -206,8 +206,8 @@ def _WARNING(pal):
     return "#A9760B" if pal is LIGHT else "#E0BC5E"
 
 def quota_block(s, pal, x, y, w, level, rows, uptime):
-    """QuotaBlock：套餐用量头行（+ Max pill + UP）+ 窗口行 ×N（12dp 间距）。"""
-    s.text(x, y + dp(8), "套餐用量", dp(11), pal.onPrimaryContainer, fo=0.65)
+    """QuotaBlock: plan-usage header row (+ Max pill + UP) + N window rows (12dp gaps)."""
+    s.text(x, y + dp(8), "Plan usage", dp(11), pal.onPrimaryContainer, fo=0.65)
     if level:
         pill(s, x + dp(56), y - dp(1), level, 10, _alpha(pal.primary, 0.14),
              pal.onPrimaryContainer, mono=True, weight=600, padx=8, pady=2)
@@ -228,40 +228,40 @@ def hero_card(s, pal, y0, running=True):
     ch = dp(24 + 16 + 34 + 14 + 17 + 12 + (30 + 12) * n_rows + 14 + 52) + p * 2
     s.rect(card_x, y, card_w, ch, dp(24), pal.primaryContainer)
     cy = y + p
-    # 行1：状态点 + 状态文本 + plan 徽章
+    # Row 1: status dot + status text + plan badge
     dot_c = pal.success if running else pal.onSurfaceVariant
     status_dot(s, pal, card_x + p + dp(6), cy + dp(12), dot_c, pulse=running)
-    s.text(card_x + p + dp(24), cy + dp(12), "运行中" if running else "已停止", dp(20), pal.onPrimaryContainer, weight=600)
+    s.text(card_x + p + dp(24), cy + dp(12), "Running" if running else "Stopped", dp(20), pal.onPrimaryContainer, weight=600)
     pill(s, card_x + card_w - p - dp(104), cy - dp(1), "coding-plan", 12, _alpha(pal.primary, 0.14),
          pal.onPrimaryContainer, mono=True, weight=400, padx=12, pady=5)
     cy += dp(24 + 16)
-    # 行2：地址 + 复制胶囊（停止态为「未启动」，纯文本）
-    s.text(card_x + p, cy + dp(17), "127.0.0.1:8080" if running else "未启动", dp(24), pal.onPrimaryContainer,
+    # Row 2: address + copy pill (stopped state is "Not started", plain text)
+    s.text(card_x + p, cy + dp(17), "127.0.0.1:8080" if running else "Not started", dp(24), pal.onPrimaryContainer,
            weight=600, mono=running)
     if running:
-        bw = pill_w("复制", 13, padx=14) + dp(15 + 6)
+        bw = pill_w("Copy", 13, padx=14) + dp(15 + 6)
         bh = dp(13) + dp(14)
         bx = card_x + card_w - p - bw
         s.rect(bx, cy + dp(17) - bh / 2, bw, bh, dp(50), "none", stroke=_alpha(pal.primary, 0.45), sw=dp(1.5))
         copy_glyph(s, pal, bx + dp(14), cy + dp(17) - dp(7.5), _alpha(pal.onPrimaryContainer, 0.85))
-        s.text(bx + dp(14) + dp(15) + dp(6), cy + dp(17), "复制", dp(13), pal.onPrimaryContainer, anchor="start")
+        s.text(bx + dp(14) + dp(15) + dp(6), cy + dp(17), "Copy", dp(13), pal.onPrimaryContainer, anchor="start")
     cy += dp(34 + 14)
-    # 行3：套餐用量块（替换旧 sparkline）——镜像 MainActivity.kt QuotaBlock
+    # Row 3: plan-usage block (replaces old sparkline) — mirrors MainActivity.kt QuotaBlock
     rows = [
-        ("5 小时", "剩 96%", 0.96, 0, "3h 55m 后重置", False),
-        ("每周", "剩 40%", 0.40, 0, "4d 00h 后重置", False),
-        ("月度", "剩 3,891 次", 0.98, 0, "14d 08h 后重置", False),
+        ("5h", "96% left", 0.96, 0, "in 3h 55m", False),
+        ("Weekly", "40% left", 0.40, 0, "in 4d 00h", False),
+        ("Monthly", "3,891 left", 0.98, 0, "in 14d 08h", False),
     ]
     quota_block(s, pal, card_x + p, cy, inner_w, "Max", rows,
                 "UP 00:12:34" if running else "UP —")
     cy += dp(17 + 12 + (30 + 12) * n_rows + 14)
-    # 主按钮
+    # Primary button
     s.rect(card_x + p, cy, inner_w, dp(52), dp(50), pal.primary)
     if running:
         s.rect(card_x + p + inner_w / 2 - dp(52), cy + dp(19), dp(14), dp(14), dp(3), pal.onPrimary)
-        s.text(card_x + p + inner_w / 2 + dp(5), cy + dp(26), "停止代理", dp(16), pal.onPrimary, weight=600, anchor="start")
+        s.text(card_x + p + inner_w / 2 + dp(5), cy + dp(26), "Stop proxy", dp(16), pal.onPrimary, weight=600, anchor="start")
     else:
-        s.text(card_x + p + inner_w / 2, cy + dp(26), "启动代理", dp(16), pal.onPrimary, weight=600, anchor="middle")
+        s.text(card_x + p + inner_w / 2, cy + dp(26), "Start proxy", dp(16), pal.onPrimary, weight=600, anchor="middle")
     return y + ch
 
 def _alpha(hex6, a):
@@ -277,10 +277,10 @@ def account_card(s, pal, y0, logged_in=True, running=True, provider="zai"):
     s.circle(card_x + p + dp(24), cy, dp(24), pal.primaryContainer)
     s.text(card_x + p + dp(24), cy + dp(1), "Z", dp(22), pal.onPrimaryContainer, weight=700, anchor="middle")
     tx = card_x + p + dp(48 + 12)
-    s.text(tx, cy - dp(11), "Z.AI 账号" if provider == "zai" else "智谱账号", dp(16), pal.onSurface, weight=600)
+    s.text(tx, cy - dp(11), "Z.AI account" if provider == "zai" else "Zhipu account", dp(16), pal.onSurface, weight=600)
     s.circle(tx + dp(4), cy + dp(12), dp(4), pal.success if logged_in else pal.error)
-    st = "已登录 · 代理运行中 · 登出已锁定" if (logged_in and running) else ("已登录 · OAuth 授权" if logged_in else "未登录")
-    bw0 = pill_w("登出", 14, padx=16) if logged_in else pill_w("登录", 14, padx=16)
+    st = "Logged in · proxy running · logout locked" if (logged_in and running) else ("Logged in · OAuth" if logged_in else "Not logged in")
+    bw0 = pill_w("Log out", 14, padx=16) if logged_in else pill_w("Log in", 14, padx=16)
     avail = card_x + card_w - p - bw0 - dp(12) - (tx + dp(14))
     def tw_(t): return sum(dp(13) * (1.0 if ord(c) > 0x2E7F else 0.5) for c in t)
     while st and tw_(st) > avail:
@@ -290,14 +290,14 @@ def account_card(s, pal, y0, logged_in=True, running=True, provider="zai"):
     s.text(tx + dp(14), cy + dp(12), st, dp(13), pal.onSurfaceVariant)
     if logged_in:
         a = 0.25 if running else 0.55
-        bw = pill_w("登出", 14, padx=16)
+        bw = pill_w("Log out", 14, padx=16)
         bh = dp(14) + dp(16)
         s.rect(card_x + card_w - p - bw, cy - bh / 2, bw, bh, dp(50), "none",
                stroke=_alpha(pal.error, a), sw=dp(1.5))
-        s.text(card_x + card_w - p - bw / 2, cy, "登出", dp(14), _alpha(pal.error, 0.38 if running else 1.0),
+        s.text(card_x + card_w - p - bw / 2, cy, "Log out", dp(14), _alpha(pal.error, 0.38 if running else 1.0),
                weight=500, anchor="middle")
     else:
-        pill(s, card_x + card_w - p - dp(76), cy - dp(19), "登录", 14, pal.primary, pal.onPrimary, weight=500, padx=16, pady=8)
+        pill(s, card_x + card_w - p - dp(76), cy - dp(19), "Log in", 14, pal.primary, pal.onPrimary, weight=500, padx=16, pady=8)
     return y0 + ch
 
 def access_config_card(s, pal, y0, running=True, provider="zai"):
@@ -306,19 +306,19 @@ def access_config_card(s, pal, y0, running=True, provider="zai"):
     ch = dp(16 + 24 + 24 + 14 + 37 + 14 + 37) + p
     s.rect(card_x, y0, card_w, ch, dp(24), pal.scLow)
     cy = y0 + p
-    s.text(card_x + p, cy + dp(12), "接入配置", dp(16), pal.onSurface, weight=600)
-    s.text(card_x + card_w - p, cy + dp(12), "运行中 · 切换已锁定" if running else "停止代理后可切换",
+    s.text(card_x + p, cy + dp(12), "Connection", dp(16), pal.onSurface, weight=600)
+    s.text(card_x + card_w - p, cy + dp(12), "Running · switching locked" if running else "Stop the proxy to switch",
            dp(12), pal.dim, anchor="end")
     cy += dp(24)
     s.line(card_x + p, cy, card_x + card_w - p, cy, pal.outlineVariant, dp(1))
     cy += dp(12)
     chip_w = (card_w - p * 2 - dp(52) - dp(8)) / 2
-    s.text(card_x + p, cy + dp(18.5), "服务商", dp(13), pal.onSurfaceVariant)
+    s.text(card_x + p, cy + dp(18.5), "Provider", dp(13), pal.onSurfaceVariant)
     x1 = card_x + p + dp(52)
     seg_chip(s, pal, x1, cy, chip_w, dp(37), "Z.AI", provider == "zai", enabled=not running)
-    seg_chip(s, pal, x1 + chip_w + dp(8), cy, chip_w, dp(37), "智谱", provider == "bigmodel", enabled=not running)
+    seg_chip(s, pal, x1 + chip_w + dp(8), cy, chip_w, dp(37), "Zhipu", provider == "bigmodel", enabled=not running)
     cy += dp(37 + 14)
-    s.text(card_x + p, cy + dp(18.5), "套餐", dp(13), pal.onSurfaceVariant)
+    s.text(card_x + p, cy + dp(18.5), "Plan", dp(13), pal.onSurfaceVariant)
     seg_chip(s, pal, x1, cy, chip_w, dp(37), "coding-plan", True, enabled=not running, mono=True)
     seg_chip(s, pal, x1 + chip_w + dp(8), cy, chip_w, dp(37), "start-plan", False, enabled=not running, mono=True)
     return y0 + ch
@@ -340,14 +340,14 @@ def logs_preview_card(s, pal, y0, lines, err_count=1, count_label="128"):
     ch = dp(24 + 20 + 8) + list_h + dp(17 + 10)
     s.rect(card_x, y0, card_w, ch, dp(24), pal.scLow)
     cy = y0 + p
-    s.text(card_x + p, cy + dp(10), "实时日志", dp(16), pal.onSurface, weight=600)
+    s.text(card_x + p, cy + dp(10), "Live logs", dp(16), pal.onSurface, weight=600)
     bw = pill_w(count_label, 11, padx=9, mono=True)
     s.rect(card_x + p + dp(70), cy + dp(10) - dp(11), bw, dp(22), dp(50), pal.secondaryContainer)
     s.text(card_x + p + dp(70) + bw / 2, cy + dp(10), count_label, dp(11), pal.onSecondaryContainer,
            weight=600, anchor="middle", mono=True)
     ec = pal.error if err_count else pal.success
-    s.text(card_x + card_w - p - dp(24) - dp(70), cy + dp(10), f"错误 {err_count}", dp(12), ec, weight=600, mono=True, anchor="end")
-    s.text(card_x + card_w - p - dp(24), cy + dp(10), "查看全部", dp(13), pal.primary, weight=500, anchor="end")
+    s.text(card_x + card_w - p - dp(24) - dp(70), cy + dp(10), f"{err_count} errors", dp(12), ec, weight=600, mono=True, anchor="end")
+    s.text(card_x + card_w - p - dp(24), cy + dp(10), "View all", dp(13), pal.primary, weight=500, anchor="end")
     s.icon24("chevright", card_x + card_w - p - dp(20), cy + dp(1), dp(18), pal.primary)
     cy += dp(20 + 10)
     s.line(card_x + p, cy, card_x + card_w - p, cy, pal.outlineVariant, dp(1))
@@ -356,7 +356,7 @@ def logs_preview_card(s, pal, y0, lines, err_count=1, count_label="128"):
         s.text(card_x + p, cy + lh / 2, ln, dp(11), pal.error if is_err else pal.onSurfaceVariant, mono=True)
         cy += lh
     cy += dp(5)
-    s.text(card_x + card_w / 2, cy + dp(8), "点击卡片或右上角「查看全部」查看完整日志", dp(12), pal.dim, anchor="middle")
+    s.text(card_x + card_w / 2, cy + dp(8), 'Tap the card or "View all" (top right) for full logs', dp(12), pal.dim, anchor="middle")
     return y0 + ch
 
 LOG_LINES_RUN = [
@@ -379,7 +379,7 @@ def nav_bar(s, pal, selected):
     bar_y = H - dp(24) - bar_h  # navigationBarsPadding 24dp
     s.line(0, bar_y, W, bar_y, pal.outlineVariant, dp(1))
     s.rect(0, bar_y + dp(1), W, bar_h + dp(24) - dp(1), 0, pal.sc)
-    labels = ["主页", "日志", "设置"]
+    labels = ["Home", "Logs", "Settings"]
     icons = ["home", "menu", "settings"]
     for i in range(3):
         cx = W / 6 + i * W / 3
@@ -390,7 +390,7 @@ def nav_bar(s, pal, selected):
         s.icon24(icons[i], cx - dp(11), bar_y + dp(10), dp(22), ic_c)
         s.text(cx, bar_y + dp(48), labels[i], dp(11), ic_c, weight=600 if sel else 400, anchor="middle")
 
-def screen(pal, dark, name, body, nav_sel=0, subtitle="本地反向代理 · 已连接", topbar=True):
+def screen(pal, dark, name, body, nav_sel=0, subtitle="Local reverse proxy · Connected", topbar=True):
     s = SVG()
     s.e.append(f'<clipPath id="iconclip_{"d" if dark else "l"}"><rect x="{dp(16):.1f}" y="{dp(28):.1f}" width="{dp(40):.1f}" height="{dp(40):.1f}" rx="{dp(10):.1f}"/></clipPath>')
     if topbar:
@@ -399,10 +399,10 @@ def screen(pal, dark, name, body, nav_sel=0, subtitle="本地反向代理 · 已
     nav_bar(s, pal, nav_sel)
     s.save(os.path.join(DIR, name + ".svg"), pal)
 
-# ── 三张 Tab + 暗色主页 ──────────────────────────────────────────────
+# ── Three tabs + dark home ──────────────────────────────────────────────
 
 def home_body(s, pal, running=True, provider="zai", log_lines=LOG_LINES_RUN, err_count=1, count_label="128"):
-    y = dp(20 + 56 + 4)  # 顶部留白 + TopBar + LazyColumn top padding
+    y = dp(20 + 56 + 4)  # top padding + TopBar + LazyColumn top padding
     y = hero_card(s, pal, y, running=running) + dp(12)
     y = account_card(s, pal, y, logged_in=True, running=running, provider=provider) + dp(12)
     y = access_config_card(s, pal, y, running=running, provider=provider) + dp(12)
@@ -410,13 +410,13 @@ def home_body(s, pal, running=True, provider="zai", log_lines=LOG_LINES_RUN, err
 
 def logs_screen_body(s, pal):
     y = dp(20 + 10)
-    s.text(dp(16), y + dp(16), "实时日志 (128)", dp(18), pal.onSurface, weight=600)
-    s.text(W - dp(16) - dp(60), y + dp(16), "复制", dp(13), pal.primary, anchor="middle")
-    s.text(W - dp(16) - dp(10), y + dp(16), "清屏", dp(13), pal.primary, anchor="end")
+    s.text(dp(16), y + dp(16), "Live logs (128)", dp(18), pal.onSurface, weight=600)
+    s.text(W - dp(16) - dp(60), y + dp(16), "Copy", dp(13), pal.primary, anchor="middle")
+    s.text(W - dp(16) - dp(10), y + dp(16), "Clear", dp(13), pal.primary, anchor="end")
     y += dp(28 + 8)
     cw = [dp(58), dp(58), dp(58)]
     x = dp(16)
-    for i, lab in enumerate(["全部", "成功", "错误"]):
+    for i, lab in enumerate(["All", "Success", "Errors"]):
         seg_chip(s, pal, x, y, cw[i], dp(33), lab, i == 0)
         x += cw[i] + dp(8)
     y += dp(33 + 8)
@@ -456,43 +456,43 @@ def setting_row(s, pal, x, y, w, label, value, vc=None):
 
 def settings_body(s, pal):
     y = dp(20 + 10)
-    s.text(dp(16), y + dp(16), "设置", dp(20), pal.onSurface, weight=600)
+    s.text(dp(16), y + dp(16), "Settings", dp(20), pal.onSurface, weight=600)
     y += dp(32 + 10)
-    # 外观
-    x, w, cy, y2 = card_block(s, pal, y, "外观", dp(37 + 6 + 17))
-    s.text(x, cy + dp(18.5), "主题", dp(13), pal.onSurfaceVariant)
+    # Appearance
+    x, w, cy, y2 = card_block(s, pal, y, "Appearance", dp(37 + 6 + 17))
+    s.text(x, cy + dp(18.5), "Theme", dp(13), pal.onSurfaceVariant)
     cw = (w - dp(64) - dp(16)) / 3
-    for i, lab in enumerate(["跟随系统", "亮色", "暗色"]):
+    for i, lab in enumerate(["System", "Light", "Dark"]):
         seg_chip(s, pal, x + dp(64) + i * (cw + dp(8)), cy, cw, dp(37), lab, i == 0)
-    s.text(x, cy + dp(37 + 6 + 8), "跟随系统时，深色模式开关即时生效", dp(12), pal.dim)
+    s.text(x, cy + dp(37 + 6 + 8), "When following the system, dark-mode switches apply instantly", dp(12), pal.dim)
     y = y2 + dp(12)
-    # 接入信息
-    x, w, cy, y2 = card_block(s, pal, y, "接入信息", dp(4 * 31 + 4 + 17))
-    setting_row(s, pal, x, cy + dp(12), w, "服务商", "Z.AI")
-    setting_row(s, pal, x, cy + dp(12 + 31), w, "套餐", "coding-plan")
-    setting_row(s, pal, x, cy + dp(12 + 62), w, "状态", "127.0.0.1:8080 · 运行中", vc=pal.success)
-    setting_row(s, pal, x, cy + dp(12 + 93), w, "登录", "已登录")
-    s.text(x, cy + dp(12 + 124 + 2), "切换服务商/套餐在主页「接入配置」卡", dp(12), pal.dim)
+    # Connection info
+    x, w, cy, y2 = card_block(s, pal, y, "Connection info", dp(4 * 31 + 4 + 17))
+    setting_row(s, pal, x, cy + dp(12), w, "Provider", "Z.AI")
+    setting_row(s, pal, x, cy + dp(12 + 31), w, "Plan", "coding-plan")
+    setting_row(s, pal, x, cy + dp(12 + 62), w, "Status", "127.0.0.1:8080 · Running", vc=pal.success)
+    setting_row(s, pal, x, cy + dp(12 + 93), w, "Login", "Logged in")
+    s.text(x, cy + dp(12 + 124 + 2), 'Switch provider/plan on the Home "Connection" card', dp(12), pal.dim)
     y = y2 + dp(12)
-    # 关于
-    x, w, cy, y2 = card_block(s, pal, y, "关于", dp(12 + 93 + 6 + 48 + 25 + 17 + 17 + 10))
-    setting_row(s, pal, x, cy + dp(12), w, "应用", "ZCode Proxy")
-    setting_row(s, pal, x, cy + dp(12 + 31), w, "版本", "4.7.2")
-    setting_row(s, pal, x, cy + dp(12 + 62), w, "控制协议", "Node · 127.0.0.1 本地监听")
+    # About
+    x, w, cy, y2 = card_block(s, pal, y, "About", dp(12 + 93 + 6 + 48 + 25 + 17 + 17 + 10))
+    setting_row(s, pal, x, cy + dp(12), w, "App", "ZCode Proxy")
+    setting_row(s, pal, x, cy + dp(12 + 31), w, "Version", "4.7.2")
+    setting_row(s, pal, x, cy + dp(12 + 62), w, "Control protocol", "Node · 127.0.0.1 loopback only")
     ry = cy + dp(12 + 93 + 6)
-    s.text(x, ry + dp(10), "自动检查更新", dp(14), pal.onSurfaceVariant)
-    s.text(x, ry + dp(29), "启动时查询 GitHub Releases", dp(12), pal.dim)
+    s.text(x, ry + dp(10), "Auto-check for updates", dp(14), pal.onSurfaceVariant)
+    s.text(x, ry + dp(29), "Query GitHub Releases at startup", dp(12), pal.dim)
     swx, swy = x + w - dp(52), ry + dp(2)
     s.rect(swx, swy, dp(52), dp(32), dp(16), pal.primary)
     s.circle(swx + dp(52 - 16), swy + dp(16), dp(12), pal.onPrimary)
     ry2 = ry + dp(48)
-    s.text(x, ry2, "更新", dp(14), pal.onSurfaceVariant)
-    s.text(x + dp(40), ry2, "已是最新（v4.7.2）", dp(13), pal.success)
-    s.text(x + w, ry2, "检查更新", dp(13), pal.primary, anchor="end")
-    s.text(x, ry2 + dp(25), "更新来自 GitHub Releases · TriDefender/zcode-api", dp(12), pal.dim)
-    s.text(x, ry2 + dp(25 + 17), "上游：Z.AI / 智谱开放平台（OAuth 登录）", dp(12), pal.dim)
+    s.text(x, ry2, "Updates", dp(14), pal.onSurfaceVariant)
+    s.text(x + dp(40), ry2, "Up to date (v4.7.2)", dp(13), pal.success)
+    s.text(x + w, ry2, "Check for updates", dp(13), pal.primary, anchor="end")
+    s.text(x, ry2 + dp(25), "Updates come from GitHub Releases · TriDefender/zcode-api", dp(12), pal.dim)
+    s.text(x, ry2 + dp(25 + 17), "Upstream: Z.AI / Zhipu open platform (OAuth login)", dp(12), pal.dim)
 
-# 亮色主页 = 运行中；暗色主页 = 复刻真机截图状态（已停止 · 智谱 · 已登录 · coding-plan）
+# Light home = running; dark home = replicates the device screenshot state (stopped · Zhipu · logged in · coding-plan)
 screen(LIGHT, False, "home-light", lambda s, p: home_body(s, p, running=True, provider="zai"), nav_sel=0)
 screen(DARK, True, "home-dark", lambda s, p: home_body(s, p, running=False, provider="bigmodel",
       log_lines=LOG_LINES_STOP, err_count=0, count_label="5"), nav_sel=0)

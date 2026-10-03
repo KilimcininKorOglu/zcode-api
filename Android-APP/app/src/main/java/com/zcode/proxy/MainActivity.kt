@@ -128,11 +128,11 @@ class MainActivity : ComponentActivity() {
 private const val POLL_INTERVAL_MS = 1500L
 private const val MAX_LOG_LINES = 500
 
-/** coding 次数制窗口长度（时间进度条分母）；标签与窗口一一对应。 */
+/** Coding count-window length (denominator of the time progress bar); labels map 1:1 to windows. */
 private const val FIVE_HOUR_WINDOW_MS = 5 * 60 * 60 * 1000L
 private const val WEEK_WINDOW_MS = 7 * 24 * 60 * 60 * 1000L
-private const val LABEL_5H = "5 小时"
-private const val LABEL_WEEK = "每周"
+private const val LABEL_5H = "5h"
+private const val LABEL_WEEK = "Weekly"
 
 @Composable
 private fun AppScreen(themeMode: ThemeMode, onThemeModeChange: (ThemeMode) -> Unit) {
@@ -151,14 +151,14 @@ private fun AppScreen(themeMode: ThemeMode, onThemeModeChange: (ThemeMode) -> Un
     var toast by remember { mutableStateOf<String?>(null) }
     var tab by rememberSaveable { mutableStateOf(0) }
 
-    // 套餐用量（替换原「近 60 分钟请求」sparkline）：登录后拉一次 + 点按刷新，
-    // 无轮询 —— billing/monitor 网关限频（与 TUI 手动刷新同策略）。
+    // Plan usage (replaces the old "last 60 min requests" sparkline): fetch once after login + tap to refresh,
+    // No polling — billing/monitor gateways are rate-limited (same manual-refresh policy as the TUI).
     var quotaUi by remember { mutableStateOf<QuotaUi?>(null) }
     var quotaStatus by remember { mutableStateOf("idle") } // idle | loading | ok | empty | error
     var quotaErrorMsg by remember { mutableStateOf("") }
     var quotaInFlight by remember { mutableStateOf(false) }
 
-    // 更新检查（GitHub Releases）：每次启动自动查一次，设置页可手动触发
+    // Update check (GitHub Releases): auto-check once per launch, manual trigger on the settings page
     val currentVersion = remember {
         runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull()
     }
@@ -176,21 +176,21 @@ private fun AppScreen(themeMode: ThemeMode, onThemeModeChange: (ThemeMode) -> Un
             updateChecking = false
             if (info == null) {
                 updateCheckFailed = true
-                if (manual) toast = "检查更新失败，GitHub 暂不可达"
+                if (manual) toast = "Update check failed, GitHub unreachable"
                 return@launch
             }
             updateCheckFailed = false
             updateInfo = info
             val hasUpdate = UpdateChecker.isNewer(currentVersion, info.tag)
-            if (manual) toast = if (hasUpdate) "发现新版本 ${info.tag}" else "已是最新版本"
+            if (manual) toast = if (hasUpdate) "New version available ${info.tag}" else "Already on the latest version"
             if (hasUpdate && (manual || info.tag != skippedTag)) showUpdateDialog = true
         }
     }
 
-    // 每次启动自动检查一次（可在设置页关闭；手动检查不受开关影响）
+    // Auto-check once per launch (can be disabled on the settings page; manual checks ignore the switch)
     LaunchedEffect(Unit) { if (autoCheckUpdate) checkForUpdate(manual = false) }
 
-    // 运行时长：false→true 记起点；每秒刷新一次仅用于英雄卡 uptime
+    // Uptime: record start on false->true; refresh every second only for the hero-card uptime
     var runningSince by remember { mutableStateOf<Long?>(null) }
     var nowMs by remember { mutableLongStateOf(0L) }
     LaunchedEffect(proxyRunning) {
@@ -204,7 +204,7 @@ private fun AppScreen(themeMode: ThemeMode, onThemeModeChange: (ThemeMode) -> Un
         }
     }
 
-    // 轮询：status + 增量 getLogs（协议与旧版一致，1.5s）
+    // Polling: status + incremental getLogs (same protocol as before, 1.5s)
     LaunchedEffect(Unit) {
         while (true) {
             val cc = MainActivity.controlClient
@@ -252,7 +252,7 @@ private fun AppScreen(themeMode: ThemeMode, onThemeModeChange: (ThemeMode) -> Un
     fun refreshQuota() {
         if (quotaInFlight) return
         quotaInFlight = true
-        // 已有数据时保留旧值原地刷新（loading 占位仅用于首拉）
+        // Keep old values and refresh in place when data exists (loading placeholder only for the first fetch)
         if (quotaUi == null) quotaStatus = "loading"
         scope.launch {
             val r = MainActivity.controlClient?.quota()
@@ -268,7 +268,7 @@ private fun AppScreen(themeMode: ThemeMode, onThemeModeChange: (ThemeMode) -> Un
         }
     }
 
-    // 登录态/套餐切换时自动拉一次；登出清空（billing 调用需要凭据）
+    // Auto-fetch once on login-state/plan change; clear on logout (billing calls need credentials)
     LaunchedEffect(loggedIn, plan) {
         if (loggedIn) refreshQuota() else {
             quotaUi = null
@@ -282,9 +282,9 @@ private fun AppScreen(themeMode: ThemeMode, onThemeModeChange: (ThemeMode) -> Un
             val r = MainActivity.controlClient?.setConfig(provider = p)
             if (r != null && r.optBoolean("ok", false)) {
                 provider = p
-                toast = "服务商 → ${if (p == "zai") "Z.AI" else "智谱"}"
+                toast = "Provider → ${if (p == "zai") "Z.AI" else "Zhipu"}"
             } else {
-                toast = "切换失败: ${r?.optString("error") ?: "Node 未响应"}"
+                toast = "Switch failed: ${r?.optString("error") ?: "Node not responding"}"
             }
         }
     }
@@ -294,9 +294,9 @@ private fun AppScreen(themeMode: ThemeMode, onThemeModeChange: (ThemeMode) -> Un
             val r = MainActivity.controlClient?.setConfig(plan = p)
             if (r != null && r.optBoolean("ok", false)) {
                 plan = p
-                toast = "套餐 → $p"
+                toast = "Plan → $p"
             } else {
-                toast = "切换失败: ${r?.optString("error") ?: "Node 未响应"}"
+                toast = "Switch failed: ${r?.optString("error") ?: "Node not responding"}"
             }
         }
     }
@@ -306,9 +306,9 @@ private fun AppScreen(themeMode: ThemeMode, onThemeModeChange: (ThemeMode) -> Un
             val r = MainActivity.controlClient?.startOAuth(provider)
             if (r != null && r.optBoolean("ok", false)) {
                 openInBrowser(context, r.optString("authorizeUrl"))
-                toast = "在浏览器完成授权后回到本应用即可；若浏览器提示无法打开 zcode:// 链接，可忽略"
+                toast = "Complete authorization in the browser, then return here; if the browser says it cannot open the zcode:// link, ignore it"
             } else {
-                toast = "登录失败: ${r?.optString("error") ?: "Node 未响应"}"
+                toast = "Login failed: ${r?.optString("error") ?: "Node not responding"}"
             }
         }
     }
@@ -316,7 +316,7 @@ private fun AppScreen(themeMode: ThemeMode, onThemeModeChange: (ThemeMode) -> Un
     fun logout() {
         scope.launch {
             val r = MainActivity.controlClient?.logout()
-            toast = if (r != null && r.optBoolean("ok", false)) "已登出" else "登出失败"
+            toast = if (r != null && r.optBoolean("ok", false)) "Logged out" else "Logout failed"
         }
     }
 
@@ -324,9 +324,9 @@ private fun AppScreen(themeMode: ThemeMode, onThemeModeChange: (ThemeMode) -> Un
         scope.launch {
             val r = MainActivity.controlClient?.startProxy()
             toast = if (r != null && r.optBoolean("ok", false)) {
-                "代理已启动 · 127.0.0.1:${r.optInt("port")}"
+                "Proxy started · 127.0.0.1:${r.optInt("port")}"
             } else {
-                "启动失败: ${r?.optString("error") ?: "Node 未响应"}"
+                "Start failed: ${r?.optString("error") ?: "Node not responding"}"
             }
         }
     }
@@ -334,7 +334,7 @@ private fun AppScreen(themeMode: ThemeMode, onThemeModeChange: (ThemeMode) -> Un
     fun stopProxy() {
         scope.launch {
             val r = MainActivity.controlClient?.stopProxy()
-            toast = if (r != null && r.optBoolean("ok", false)) "代理已停止" else "停止失败: ${r?.optString("error") ?: "Node 未响应"}"
+            toast = if (r != null && r.optBoolean("ok", false)) "Proxy stopped" else "Stop failed: ${r?.optString("error") ?: "Node not responding"}"
         }
     }
 
@@ -344,7 +344,7 @@ private fun AppScreen(themeMode: ThemeMode, onThemeModeChange: (ThemeMode) -> Un
         Column(Modifier.fillMaxSize().statusBarsPadding()) {
             when (tab) {
                 0 -> {
-                    // ── 主页 ──
+                    // ── Home ──
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -353,8 +353,8 @@ private fun AppScreen(themeMode: ThemeMode, onThemeModeChange: (ThemeMode) -> Un
                         item {
                             TopBar(
                                 subtitle = when {
-                                    !reachable -> "本地反向代理 · Node 未响应"
-                                    else -> "本地反向代理 · 已连接"
+                                    !reachable -> "Local reverse proxy · Node not responding"
+                                    else -> "Local reverse proxy · Connected"
                                 },
                                 onSettings = { tab = 2 },
                             )
@@ -371,7 +371,7 @@ private fun AppScreen(themeMode: ThemeMode, onThemeModeChange: (ThemeMode) -> Un
                                 quotaStatus = quotaStatus,
                                 quotaErrorMsg = quotaErrorMsg,
                                 clipboard = clipboard,
-                                onCopied = { toast = "已复制 127.0.0.1:$proxyPort" },
+                                onCopied = { toast = "Copied 127.0.0.1:$proxyPort" },
                                 onStart = ::startProxy,
                                 onStop = ::stopProxy,
                                 onRefreshQuota = ::refreshQuota,
@@ -435,7 +435,7 @@ private fun AppScreen(themeMode: ThemeMode, onThemeModeChange: (ThemeMode) -> Un
             }
         }
 
-        // 底部导航
+        // Bottom nav
         Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
             HorizontalDivider(color = cs.outlineVariant, thickness = 1.dp)
             Row(
@@ -445,9 +445,9 @@ private fun AppScreen(themeMode: ThemeMode, onThemeModeChange: (ThemeMode) -> Un
                     .navigationBarsPadding()
                     .height(68.dp),
             ) {
-                NavItem("主页", Icons.Filled.Home, tab == 0, Modifier.weight(1f)) { tab = 0 }
-                NavItem("日志", Icons.Filled.Menu, tab == 1, Modifier.weight(1f)) { tab = 1 }
-                NavItem("设置", Icons.Filled.Settings, tab == 2, Modifier.weight(1f)) { tab = 2 }
+                NavItem("Home", Icons.Filled.Home, tab == 0, Modifier.weight(1f)) { tab = 0 }
+                NavItem("Logs", Icons.Filled.Menu, tab == 1, Modifier.weight(1f)) { tab = 1 }
+                NavItem("Settings", Icons.Filled.Settings, tab == 2, Modifier.weight(1f)) { tab = 2 }
             }
         }
 
@@ -467,16 +467,16 @@ private fun AppScreen(themeMode: ThemeMode, onThemeModeChange: (ThemeMode) -> Un
         }
     }
 
-    // 新版本弹窗（启动自动检查 / 设置页手动检查共用）
+    // New-version dialog (shared by launch auto-check / settings manual check)
     if (showUpdateDialog) {
         updateInfo?.let { info ->
             AlertDialog(
                 onDismissRequest = { showUpdateDialog = false },
-                title = { Text("发现新版本", fontWeight = FontWeight.SemiBold) },
+                title = { Text("New version available", fontWeight = FontWeight.SemiBold) },
                 text = {
                     Column {
                         Text(
-                            "最新 ${info.tag} · 当前 ${currentVersion ?: "未知"}",
+                            "Latest ${info.tag} · Current ${currentVersion ?: "unknown"}",
                             fontFamily = Mono,
                             fontSize = 13.sp,
                             color = cs.onSurfaceVariant,
@@ -498,7 +498,7 @@ private fun AppScreen(themeMode: ThemeMode, onThemeModeChange: (ThemeMode) -> Un
                     TextButton(onClick = {
                         showUpdateDialog = false
                         openInBrowser(context, info.apkUrl ?: info.htmlUrl)
-                    }) { Text("前往下载", fontWeight = FontWeight.Medium) }
+                    }) { Text("Download", fontWeight = FontWeight.Medium) }
                 },
                 dismissButton = {
                     Row {
@@ -506,8 +506,8 @@ private fun AppScreen(themeMode: ThemeMode, onThemeModeChange: (ThemeMode) -> Un
                             skippedTag = info.tag
                             UpdatePrefs.saveSkipped(context, info.tag)
                             showUpdateDialog = false
-                        }) { Text("忽略此版本") }
-                        TextButton(onClick = { showUpdateDialog = false }) { Text("以后再说") }
+                        }) { Text("Skip this version") }
+                        TextButton(onClick = { showUpdateDialog = false }) { Text("Later") }
                     }
                 },
             )
@@ -529,7 +529,7 @@ private fun TopBar(subtitle: String, onSettings: () -> Unit) {
             }.getOrNull()
         }
         if (appIcon != null) {
-            // 暗色模式下黑底图标需要垫一层提亮底 + 描边，避免糊进背景（方案 A 设计稿同款）
+            // On dark mode the icon on black needs a brightened pad + border so it does not blend into the background (same as option A mock)
             val dark = isDarkTheme()
             val iconShape = RoundedCornerShape(10.dp)
             Image(
@@ -563,7 +563,7 @@ private fun TopBar(subtitle: String, onSettings: () -> Unit) {
         }
         Spacer(Modifier.weight(1f))
         IconButton(onClick = onSettings) {
-            Icon(Icons.Filled.Settings, contentDescription = "设置", tint = cs.onSurfaceVariant)
+            Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = cs.onSurfaceVariant)
         }
     }
 }
@@ -595,10 +595,10 @@ private fun HeroCard(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             val (dotColor, stateText) = when {
-                proxyRunning -> successColor() to "运行中"
-                !reachable -> MaterialTheme.colorScheme.error to "Node 未响应"
-                !loggedIn -> cs.onSurfaceVariant to "未登录"
-                else -> cs.onSurfaceVariant to "已停止"
+                proxyRunning -> successColor() to "Running"
+                !reachable -> MaterialTheme.colorScheme.error to "Node not responding"
+                !loggedIn -> cs.onSurfaceVariant to "Not logged in"
+                else -> cs.onSurfaceVariant to "Stopped"
             }
             StatusDot(dotColor, pulse = proxyRunning)
             Spacer(Modifier.width(10.dp))
@@ -617,7 +617,7 @@ private fun HeroCard(
         Spacer(Modifier.height(16.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                if (proxyRunning) "127.0.0.1:$proxyPort" else "未启动",
+                if (proxyRunning) "127.0.0.1:$proxyPort" else "Not started",
                 fontFamily = Mono,
                 fontSize = 24.sp,
                 fontWeight = FontWeight.SemiBold,
@@ -642,7 +642,7 @@ private fun HeroCard(
                     ) {
                         CopyGlyph(cs.onPrimaryContainer.copy(alpha = 0.85f))
                         Spacer(Modifier.width(6.dp))
-                        Text("复制", fontSize = 13.sp, color = cs.onPrimaryContainer)
+                        Text("Copy", fontSize = 13.sp, color = cs.onPrimaryContainer)
                     }
                 }
             }
@@ -680,9 +680,9 @@ private fun HeroCard(
                         .background(cs.onPrimary),
                 )
                 Spacer(Modifier.width(10.dp))
-                Text("停止代理", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                Text("Stop proxy", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             } else {
-                Text("启动代理", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                Text("Start proxy", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             }
         }
     }
@@ -718,7 +718,7 @@ private fun AccountCard(
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
-                if (provider == "zai") "Z.AI 账号" else "智谱账号",
+                if (provider == "zai") "Z.AI account" else "Zhipu account",
                 fontSize = 16.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = cs.onSurface,
@@ -734,10 +734,10 @@ private fun AccountCard(
                 Spacer(Modifier.width(6.dp))
                 Text(
                     when {
-                        proxyRunning && loggedIn -> "已登录 · 代理运行中 · 登出已锁定"
-                        proxyRunning -> "未登录 · 代理运行中"
-                        loggedIn -> "已登录 · OAuth 授权"
-                        else -> "未登录"
+                        proxyRunning && loggedIn -> "Logged in · proxy running · logout locked"
+                        proxyRunning -> "Not logged in · proxy running"
+                        loggedIn -> "Logged in · OAuth"
+                        else -> "Not logged in"
                     },
                     fontSize = 13.sp,
                     color = cs.onSurfaceVariant,
@@ -756,7 +756,7 @@ private fun AccountCard(
                 border = BorderStroke(1.5.dp, cs.error.copy(alpha = if (reachable && !proxyRunning) 0.55f else 0.25f)),
                 modifier = Modifier.semantics { testTag = "logoutButton" },
             ) {
-                Text("登出", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                Text("Log out", fontSize = 14.sp, fontWeight = FontWeight.Medium)
             }
         } else {
             Button(
@@ -766,7 +766,7 @@ private fun AccountCard(
                 colors = ButtonDefaults.buttonColors(containerColor = cs.primary, contentColor = cs.onPrimary),
                 modifier = Modifier.semantics { testTag = "loginButton" },
             ) {
-                Text("登录", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                Text("Log in", fontSize = 14.sp, fontWeight = FontWeight.Medium)
             }
         }
     }
@@ -791,13 +791,13 @@ private fun AccessConfigCard(
             .padding(16.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("接入配置", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = cs.onSurface)
+            Text("Connection", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = cs.onSurface)
             Spacer(Modifier.weight(1f))
             Text(
                 when {
-                    proxyRunning -> "运行中 · 切换已锁定"
-                    !reachable -> "Node 未响应"
-                    else -> "停止代理后可切换"
+                    proxyRunning -> "Running · switching locked"
+                    !reachable -> "Node not responding"
+                    else -> "Stop the proxy to switch"
                 },
                 fontSize = 12.sp,
                 color = dimColor(),
@@ -805,14 +805,14 @@ private fun AccessConfigCard(
         }
         HorizontalDivider(color = cs.outlineVariant, thickness = 1.dp, modifier = Modifier.padding(vertical = 12.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("服务商", fontSize = 13.sp, color = cs.onSurfaceVariant, modifier = Modifier.width(52.dp))
+            Text("Provider", fontSize = 13.sp, color = cs.onSurfaceVariant, modifier = Modifier.width(52.dp))
             SegChip("Z.AI", provider == "zai", enabled, modifier = Modifier.weight(1f), fill = true) { onProviderChange("zai") }
             Spacer(Modifier.width(8.dp))
-            SegChip("智谱", provider == "bigmodel", enabled, modifier = Modifier.weight(1f), fill = true) { onProviderChange("bigmodel") }
+            SegChip("Zhipu", provider == "bigmodel", enabled, modifier = Modifier.weight(1f), fill = true) { onProviderChange("bigmodel") }
         }
         Spacer(Modifier.height(14.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("套餐", fontSize = 13.sp, color = cs.onSurfaceVariant, modifier = Modifier.width(52.dp))
+            Text("Plan", fontSize = 13.sp, color = cs.onSurfaceVariant, modifier = Modifier.width(52.dp))
             SegChip("coding-plan", plan == "coding-plan", enabled, modifier = Modifier.weight(1f), fill = true, mono = true) { onPlanChange("coding-plan") }
             Spacer(Modifier.width(8.dp))
             SegChip("start-plan", plan == "start-plan", enabled, modifier = Modifier.weight(1f), fill = true, mono = true) { onPlanChange("start-plan") }
@@ -837,7 +837,7 @@ private fun LogsPreviewCard(
             .padding(16.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("实时日志", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = cs.onSurface)
+            Text("Live logs", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = cs.onSurface)
             Spacer(Modifier.width(8.dp))
             Surface(shape = RoundedCornerShape(50), color = cs.secondaryContainer) {
                 Text(
@@ -851,14 +851,14 @@ private fun LogsPreviewCard(
             }
             Spacer(Modifier.weight(1f))
             Text(
-                "错误 $errorCount",
+                "$errorCount errors",
                 fontFamily = Mono,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = if (errorCount == 0) successColor() else cs.error,
             )
             Spacer(Modifier.width(10.dp))
-            Text("查看全部", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = cs.primary)
+            Text("View all", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = cs.primary)
             Icon(
                 Icons.Filled.KeyboardArrowRight,
                 contentDescription = null,
@@ -869,7 +869,7 @@ private fun LogsPreviewCard(
         HorizontalDivider(color = cs.outlineVariant, thickness = 1.dp, modifier = Modifier.padding(vertical = 10.dp))
         if (logs.isEmpty()) {
             Text(
-                "还没有请求 — 在编码工具里发一次对话试试",
+                "No requests yet — send a chat from your coding tool to try",
                 fontSize = 12.sp,
                 color = dimColor(),
                 modifier = Modifier.padding(vertical = 10.dp),
@@ -889,7 +889,7 @@ private fun LogsPreviewCard(
             }
         }
         Text(
-            "点击卡片或右上角「查看全部」查看完整日志",
+            "Tap the card or "View all" (top right) for full logs",
             fontSize = 12.sp,
             color = dimColor(),
             textAlign = TextAlign.Center,
@@ -904,7 +904,7 @@ private fun LogsPreviewCard(
 private fun LogsScreen(logs: MutableList<String>, errRegex: Regex, onClear: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     val clipboard = LocalClipboardManager.current
-    var filter by rememberSaveable { mutableStateOf(0) } // 0 全部 1 成功 2 错误
+    var filter by rememberSaveable { mutableStateOf(0) } // 0 All 1 Success 2 Errors
     val filtered = remember(logs.size, filter) {
         when (filter) {
             1 -> logs.filter { it.contains("\\b2\\d\\d\\b".toRegex()) }
@@ -921,25 +921,25 @@ private fun LogsScreen(logs: MutableList<String>, errRegex: Regex, onClear: () -
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("实时日志 (${filtered.size})", fontSize = 18.sp, fontWeight = FontWeight.SemiBold, color = cs.onSurface)
+            Text("Live logs (${filtered.size})", fontSize = 18.sp, fontWeight = FontWeight.SemiBold, color = cs.onSurface)
             Spacer(Modifier.weight(1f))
             TextButton(
                 onClick = { clipboard.setText(AnnotatedString(filtered.joinToString("\n"))) },
                 enabled = filtered.isNotEmpty(),
-            ) { Text("复制", fontSize = 13.sp) }
-            TextButton(onClick = onClear, enabled = logs.isNotEmpty()) { Text("清屏", fontSize = 13.sp) }
+            ) { Text("Copy", fontSize = 13.sp) }
+            TextButton(onClick = onClear, enabled = logs.isNotEmpty()) { Text("Clear", fontSize = 13.sp) }
         }
         Row(Modifier.padding(horizontal = 16.dp)) {
-            SegChip("全部", filter == 0, true) { filter = 0 }
+            SegChip("All", filter == 0, true) { filter = 0 }
             Spacer(Modifier.width(8.dp))
-            SegChip("成功", filter == 1, true) { filter = 1 }
+            SegChip("Success", filter == 1, true) { filter = 1 }
             Spacer(Modifier.width(8.dp))
-            SegChip("错误", filter == 2, true) { filter = 2 }
+            SegChip("Errors", filter == 2, true) { filter = 2 }
         }
         HorizontalDivider(color = cs.outlineVariant, thickness = 1.dp, modifier = Modifier.padding(vertical = 8.dp))
         if (filtered.isEmpty()) {
             Text(
-                "暂无日志",
+                "No logs yet",
                 fontSize = 13.sp,
                 color = dimColor(),
                 modifier = Modifier.padding(16.dp),
@@ -992,71 +992,71 @@ private fun SettingsScreen(
             .padding(horizontal = 16.dp)
             .padding(bottom = 120.dp),
     ) {
-        Text("设置", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = cs.onSurface, modifier = Modifier.padding(vertical = 10.dp))
-        CardBlock(title = "外观") {
+        Text("Settings", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = cs.onSurface, modifier = Modifier.padding(vertical = 10.dp))
+        CardBlock(title = "Appearance") {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("主题", fontSize = 13.sp, color = cs.onSurfaceVariant, modifier = Modifier.width(64.dp))
-                SegChip("跟随系统", themeMode == ThemeMode.FOLLOW_SYSTEM, true) { onThemeModeChange(ThemeMode.FOLLOW_SYSTEM) }
+                Text("Theme", fontSize = 13.sp, color = cs.onSurfaceVariant, modifier = Modifier.width(64.dp))
+                SegChip("System", themeMode == ThemeMode.FOLLOW_SYSTEM, true) { onThemeModeChange(ThemeMode.FOLLOW_SYSTEM) }
                 Spacer(Modifier.width(8.dp))
-                SegChip("亮色", themeMode == ThemeMode.LIGHT, true) { onThemeModeChange(ThemeMode.LIGHT) }
+                SegChip("Light", themeMode == ThemeMode.LIGHT, true) { onThemeModeChange(ThemeMode.LIGHT) }
                 Spacer(Modifier.width(8.dp))
-                SegChip("暗色", themeMode == ThemeMode.DARK, true) { onThemeModeChange(ThemeMode.DARK) }
+                SegChip("Dark", themeMode == ThemeMode.DARK, true) { onThemeModeChange(ThemeMode.DARK) }
             }
             Spacer(Modifier.height(6.dp))
-            Text("跟随系统时，深色模式开关即时生效", fontSize = 12.sp, color = dimColor())
+            Text("When following the system, dark-mode switches apply instantly", fontSize = 12.sp, color = dimColor())
         }
         Spacer(Modifier.height(12.dp))
-        CardBlock(title = "接入信息") {
-            SettingRow("服务商", if (provider == "zai") "Z.AI" else "智谱")
-            SettingRow("套餐", plan)
+        CardBlock(title = "Connection info") {
+            SettingRow("Provider", if (provider == "zai") "Z.AI" else "Zhipu")
+            SettingRow("Plan", plan)
             SettingRow(
-                "状态",
+                "Status",
                 when {
-                    proxyRunning -> "127.0.0.1:$proxyPort · 运行中"
-                    reachable -> "未启动"
-                    else -> "Node 未响应"
+                    proxyRunning -> "127.0.0.1:$proxyPort · Running"
+                    reachable -> "Not started"
+                    else -> "Node not responding"
                 },
                 valueColor = if (proxyRunning) successColor() else cs.onSurface,
             )
-            SettingRow("登录", if (loggedIn) "已登录" else "未登录")
+            SettingRow("Login", if (loggedIn) "Logged in" else "Not logged in")
             Spacer(Modifier.height(4.dp))
-            Text("切换服务商/套餐在主页「接入配置」卡", fontSize = 12.sp, color = dimColor())
+            Text("Switch provider/plan on the Home "Connection" card", fontSize = 12.sp, color = dimColor())
         }
         Spacer(Modifier.height(12.dp))
-        CardBlock(title = "关于") {
-            SettingRow("应用", "ZCode Proxy")
-            SettingRow("版本", currentVersion ?: "—")
-            SettingRow("控制协议", "Node · 127.0.0.1 本地监听")
+        CardBlock(title = "About") {
+            SettingRow("App", "ZCode Proxy")
+            SettingRow("Version", currentVersion ?: "—")
+            SettingRow("Control protocol", "Node · 127.0.0.1 loopback only")
             Spacer(Modifier.height(6.dp))
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.weight(1f)) {
-                    Text("自动检查更新", fontSize = 14.sp, color = cs.onSurfaceVariant)
-                    Text("启动时查询 GitHub Releases", fontSize = 12.sp, color = dimColor())
+                    Text("Auto-check for updates", fontSize = 14.sp, color = cs.onSurfaceVariant)
+                    Text("Query GitHub Releases at startup", fontSize = 12.sp, color = dimColor())
                 }
                 Switch(checked = autoCheckUpdate, onCheckedChange = onAutoCheckUpdateChange)
             }
             val (updateText, updateColor) = when {
-                updateChecking -> "检查中…" to dimColor()
+                updateChecking -> "Checking…" to dimColor()
                 updateInfo != null ->
                     if (UpdateChecker.isNewer(currentVersion, updateInfo.tag)) {
-                        "${updateInfo.tag} 可更新" to cs.primary
+                        "${updateInfo.tag} available" to cs.primary
                     } else {
-                        "已是最新（${updateInfo.tag}）" to successColor()
+                        "Up to date (${updateInfo.tag})" to successColor()
                     }
-                updateCheckFailed -> "检查失败 · GitHub 不可达" to cs.error
-                else -> "未检查" to dimColor()
+                updateCheckFailed -> "Check failed · GitHub unreachable" to cs.error
+                else -> "Not checked" to dimColor()
             }
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                Text("更新", fontSize = 14.sp, color = cs.onSurfaceVariant)
+                Text("Updates", fontSize = 14.sp, color = cs.onSurfaceVariant)
                 Spacer(Modifier.width(12.dp))
                 Text(updateText, fontSize = 13.sp, color = updateColor, modifier = Modifier.weight(1f))
                 TextButton(onClick = onCheckUpdate, enabled = !updateChecking) {
-                    Text(if (updateChecking) "检查中…" else "检查更新", fontSize = 13.sp)
+                    Text(if (updateChecking) "Checking…" else "Check for updates", fontSize = 13.sp)
                 }
             }
             Spacer(Modifier.height(4.dp))
-            Text("更新来自 GitHub Releases · TriDefender/zcode-api", fontSize = 12.sp, color = dimColor())
-            Text("上游：Z.AI / 智谱开放平台（OAuth 登录）", fontSize = 12.sp, color = dimColor())
+            Text("Updates come from GitHub Releases · TriDefender/zcode-api", fontSize = 12.sp, color = dimColor())
+            Text("Upstream: Z.AI / Zhipu open platform (OAuth login)", fontSize = 12.sp, color = dimColor())
         }
     }
 }
@@ -1177,27 +1177,27 @@ private fun StatusDot(color: Color, pulse: Boolean) {
 }
 
 /**
- * 套餐用量行。`progress == null` 时只画轨道（无占比数据可画）。
- * `striped = true` 为 coding 次数制窗口的时间进度条（填充 = 距重置时间进度，斜纹）——
- * 仅在上游没给 percentage 时兜底；有 percentage 时用实心剩余占比条（与 credit 条同语义）。
- * 值恒以「剩」开头（上游 number 可能为脏值，绝不渲染 X/Y，见 pr56/#57 实弹）。
+ * Plan-usage row. When `progress == null` only the track is drawn (no ratio data to draw).
+ * `striped = true` is the time progress bar for coding count windows (fill = time-until-reset progress, striped) —
+ * fallback only when upstream omits percentage; with percentage a solid remaining-ratio bar is used (same semantics as credit bars).
+ * Values always start with the remainder (upstream number may be dirty; never render X/Y, see live data pr56/#57).
  */
 private data class QuotaRowUi(
     val label: String,
     val value: String,
     val progress: Float?,
     val striped: Boolean,
-    /** credit/剩余占比档位：0 充足 / 1 偏低(≤30%) / 2 将尽(≤10%)；时间进度条恒 0。 */
+    /** Credit/remaining-ratio band: 0 healthy / 1 low (<=30%) / 2 critical (<=10%); time progress bars are always 0. */
     val warnLevel: Int = 0,
-    /** 行内重置提示（如「1h 54m 后重置」/「2026-12-31 到期」）；null 不显示。 */
+    /** Inline reset hint (e.g. "in 1h 54m" / "expires 2026-12-31"); null hides it. */
     val resetText: String? = null,
 )
 
 private data class QuotaUi(
-    /** coding 档位字符串（data.level，如 "max"）；credit 制无档位 → null。 */
+    /** Coding tier string (data.level, e.g. "max"); credit plans have no tier → null. */
     val level: String?,
     val rows: List<QuotaRowUi>,
-    /** 快照 serverTime（epoch ms）—— 时间进度条以服务端时间为“现在”，免设备时钟偏差。 */
+    /** Snapshot serverTime (epoch ms) — time progress bars use server time as "now" to avoid device clock skew. */
     val nowMs: Long,
 )
 
@@ -1217,7 +1217,7 @@ private fun QuotaBlock(
             .clickable(enabled = loggedIn, onClick = onRefresh),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("套餐用量", fontSize = 11.sp, color = cs.onPrimaryContainer.copy(alpha = 0.65f))
+            Text("Plan usage", fontSize = 11.sp, color = cs.onPrimaryContainer.copy(alpha = 0.65f))
             quotaUi?.level?.let { level ->
                 Spacer(Modifier.width(8.dp))
                 Surface(shape = RoundedCornerShape(50), color = cs.primary.copy(alpha = 0.14f)) {
@@ -1242,23 +1242,23 @@ private fun QuotaBlock(
         Spacer(Modifier.height(12.dp))
         val ui = quotaUi
         when {
-            !loggedIn -> QuotaHint("登录后显示套餐用量")
+            !loggedIn -> QuotaHint("Log in to view plan usage")
             status == "loading" && ui == null -> QuotaPlaceholderRows()
             status == "error" -> Column {
-                QuotaHint(if (errorMsg.isBlank()) "用量获取失败" else "用量获取失败 · $errorMsg")
+                QuotaHint(if (errorMsg.isBlank()) "Failed to load usage" else "Failed to load usage · $errorMsg")
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "点按重试",
+                    "Tap to retry",
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Medium,
                     color = cs.primary,
                 )
             }
             else -> {
-                // quotaUi 是委托属性（by remember），不做智能转换 —— 显式取行列表兜底
+                // quotaUi is a delegated property (by remember), no smart cast — read row lists explicitly as fallback
                 val rows = ui?.rows.orEmpty()
                 if (rows.isEmpty()) {
-                    QuotaHint("暂无用量数据 · 点按刷新")
+                    QuotaHint("No usage data · tap refresh")
                 } else {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         rows.forEach { QuotaRow(it) }
@@ -1363,8 +1363,8 @@ private fun QuotaRow(row: QuotaRowUi) {
 
 @Composable
 private fun QuotaBar(progress: Float?, striped: Boolean, color: Color, modifier: Modifier = Modifier) {
-    // 设计稿规格：轨道 primary@12%；coding 条纹 = 8dp 周期 / 4dp 条（45% 叠 15% 底）；
-    // credit 实心条随余量缩短并按阈值变色。圆角 3dp 由 clip 统一处理。
+    // Mock spec: track primary@12%; coding stripes = 8dp period / 4dp bar (45% over 15% base);
+    // credit solid bars shrink with the remainder and recolor by threshold. 3dp corners handled by clip.
     Canvas(modifier.height(6.dp).clip(RoundedCornerShape(3.dp))) {
         drawRect(color.copy(alpha = 0.12f))
         progress?.let { p ->
@@ -1390,7 +1390,7 @@ private fun QuotaBar(progress: Float?, striped: Boolean, color: Color, modifier:
     }
 }
 
-/** epoch 秒/毫秒并存（上游两种都见过）：>1e12 视为毫秒。 */
+/** Epoch seconds and millis both seen upstream: >1e12 is treated as millis. */
 private fun toEpochMs(v: Long): Long = if (v > 1_000_000_000_000L) v else v * 1000L
 
 private fun optStringOrNull(o: JSONObject, key: String): String? {
@@ -1407,8 +1407,8 @@ private fun optEpochMsOrNull(o: JSONObject, key: String): Long? =
     optNumberOrNull(o, key)?.toLong()?.let(::toEpochMs)
 
 /**
- * 组装用量块视图。平面按主屏套餐切换选择（coding-plan → monitor 窗口 / start-plan →
- * billing 积分桶），首选平面无行时回退另一平面；level 仅在 coding 行被采用时附带。
+ * Assemble the usage block view. The plane follows the home plan switch (coding-plan → monitor windows / start-plan →
+ * billing credit buckets), falling back to the other plane when the preferred one has no rows; level is attached only when coding rows are used.
  */
 private fun parseQuota(resp: JSONObject, plan: String): QuotaUi? {
     if (!resp.optBoolean("ok", false)) return null
@@ -1430,28 +1430,28 @@ private fun parseQuota(resp: JSONObject, plan: String): QuotaUi? {
     }
 }
 
-/** monitor 平面 limits[] 归一后的最小行集（只留渲染要用的字段）。 */
+/** Minimal normalized row set for the monitor plane limits[] (only fields used for rendering). */
 private data class CodingLimitRow(
     val type: String,
     val unit: String?,
     val remaining: Double?,
     val resetMs: Long?,
-    /** 上游 percentage = 已用占比（0–100）；缺位/越界为 null。实弹 2026-09-30：2/3/60。 */
+    /** Upstream percentage = used ratio (0-100); missing/out-of-range → null. Live data 2026-09-30: 2/3/60. */
     val percentage: Double?,
 )
 
-/** 窗口语义名兜底：无重置时间的行退回类型友好名，永不裸显 TIME_LIMIT。 */
+/** Window-name fallback: rows without reset time fall back to the friendly type name; never show raw TIME_LIMIT. */
 private fun friendlyWindowType(type: String): String = when (type) {
     "TOKENS_LIMIT" -> "Token"
-    "TIME_LIMIT" -> "周期"
+    "TIME_LIMIT" -> "Cycle"
     else -> type.take(10)
 }
 
 /**
- * coding 窗口行。窗口名按重置升序的位次 + horizon 校验（5 小时 → 每周 → 月度）——
- * 实弹钉死（2026-09-30，max 档）：三窗口重置分别在 4h30m / 3d18h / 14d，正好落三个
- * 位次，且 5h/每周是 TOKENS_LIMIT 行（按 type 贴标签必然错位）。条画剩余占比
- * （percentage 缺位时 5 小时/每周退回时间进度条纹条）；值 = 剩 remaining 或 剩 P%。
+ * Coding window rows. Window names follow ascending-reset rank + horizon check (5h → Weekly → Monthly) —
+ * pinned with live data (2026-09-30, max tier): the three windows reset in 4h30m / 3d18h / 14d, landing on the three
+ * ranks, and the 5h/Weekly rows are TOKENS_LIMIT rows (labeling by type would misplace them). Bars draw the remaining ratio
+ * (falling back to time-progress stripes for 5h/Weekly when percentage is missing); value = remaining count or remaining P%.
  */
 private fun codingRows(coding: JSONObject?, nowMs: Long): List<QuotaRowUi> {
     val limits = coding?.optJSONArray("limits") ?: return emptyList()
@@ -1477,12 +1477,12 @@ private fun codingRows(coding: JSONObject?, nowMs: Long): List<QuotaRowUi> {
         val label = when {
             i == 0 && horizon != null && horizon <= 6 * 3600_000L -> LABEL_5H
             i == 1 && horizon != null && horizon <= 8 * 86_400_000L -> LABEL_WEEK
-            i == 2 && horizon != null && horizon <= 45 * 86_400_000L -> "月度"
+            i == 2 && horizon != null && horizon <= 45 * 86_400_000L -> "Monthly"
             horizon == null -> friendlyWindowType(l.type)
-            horizon in 0..(45 * 86_400_000L) -> "月度"
-            else -> "周期"
+            horizon in 0..(45 * 86_400_000L) -> "Monthly"
+            else -> "Cycle"
         }
-        // percentage = 已用占比（实弹自洽信号；total/number 是脏值，不伪造 X/Y）
+        // percentage = used ratio (self-consistent live signal; total/number are dirty, never fabricate X/Y)
         val remainingFrac = l.percentage?.let { ((100f - it.toFloat()) / 100f).coerceIn(0f, 1f) }
         val progress = remainingFrac ?: when (label) {
             LABEL_5H -> l.resetMs?.let { (1f - (it - nowMs).toFloat() / FIVE_HOUR_WINDOW_MS).coerceIn(0f, 1f) }
@@ -1497,8 +1497,8 @@ private fun codingRows(coding: JSONObject?, nowMs: Long): List<QuotaRowUi> {
         }
         val resetText = l.resetMs?.let { fmtResetCountdown(it, nowMs) }
         val value = when {
-            l.remaining != null -> "剩 ${fmtCount(l.remaining.toLong())} ${l.unit ?: "次"}"
-            remainingFrac != null -> "剩 ${(remainingFrac * 100).toInt()}%"
+            l.remaining != null -> "${fmtCount(l.remaining.toLong())} ${l.unit ?: "left"}"
+            remainingFrac != null -> "${(remainingFrac * 100).toInt()}% left"
             else -> "—"
         }
         QuotaRowUi(
@@ -1512,7 +1512,7 @@ private fun codingRows(coding: JSONObject?, nowMs: Long): List<QuotaRowUi> {
     }
 }
 
-/** billing 平面 balances[] 归一后的最小行集。 */
+/** Minimal normalized row set for the billing plane balances[]. */
 private data class CreditBucket(
     val showName: String,
     val remaining: Double,
@@ -1521,9 +1521,9 @@ private data class CreditBucket(
 )
 
 /**
- * credit 积分桶行。目标结构（用户/官方面板钉死）：5 小时 + 每周双窗口、单一总量池。
- * 桶 → 窗口判别用过期时间升序：最近一桶 8h 内到期才按窗口标签展示，否则（体验套餐
- * 长期桶）回退 showName 标签 —— 桶数不足 2 或形状不符时诚实降级，不硬套窗口语义。
+ * Credit bucket rows. Target shape (pinned to user/official panels): 5h + Weekly windows, single total pool.
+ * Bucket → window mapping uses ascending expiry: only buckets expiring within 8h use window labels, otherwise (trial-plan
+ * long-lived buckets) fall back to showName labels — with fewer than 2 buckets or mismatched shapes, degrade honestly instead of forcing window semantics.
  */
 private fun creditRows(balances: JSONArray?, nowMs: Long): List<QuotaRowUi> {
     val arr = balances ?: return emptyList()
@@ -1548,8 +1548,8 @@ private fun creditRows(balances: JSONArray?, nowMs: Long): List<QuotaRowUi> {
     return list.take(2).mapIndexed { i, b ->
         val label = when {
             windowed -> if (i == 0) LABEL_5H else LABEL_WEEK
-            list.size == 1 -> b.showName.ifBlank { "总额度" }.take(10)
-            else -> b.showName.ifBlank { "额度" }.take(10)
+            list.size == 1 -> b.showName.ifBlank { "Total" }.take(10)
+            else -> b.showName.ifBlank { "Quota" }.take(10)
         }
         val progress = if (b.total > 0) (b.remaining / b.total).toFloat().coerceIn(0f, 1f) else null
         val frac = if (b.total > 0) b.remaining / b.total else 1.0
@@ -1559,7 +1559,7 @@ private fun creditRows(balances: JSONArray?, nowMs: Long): List<QuotaRowUi> {
             frac <= 0.30 -> 1
             else -> 0
         }
-        // 窗口桶显示重置倒计时；长期桶（体验套餐）改为到期日期
+        // Window buckets show the reset countdown; long-lived buckets (trial plans) show the expiry date instead
         val resetText = b.expiresMs?.let { exp ->
             if (windowed || exp - nowMs <= 7 * 24 * 60 * 60 * 1000L) {
                 fmtResetCountdown(exp, nowMs)
@@ -1578,30 +1578,30 @@ private fun creditRows(balances: JSONArray?, nowMs: Long): List<QuotaRowUi> {
     }
 }
 
-/** `3,894` — 全精度千分位（次数制值的契约，与 TUI fmtUnits 同语义）。 */
+/** `3,894` — full-precision thousands separators (contract for count values, same semantics as TUI fmtUnits). */
 private fun fmtCount(n: Long): String =
     DecimalFormat("#,###", DecimalFormatSymbols(Locale.US)).format(n)
 
-/** 重置倒计时：`1h 54m 后重置` / `3d 06h 后重置` / 已过 → `即将重置`。 */
+/** Reset countdown: `in 1h 54m` / `in 3d 06h` / past → `resetting soon`. */
 private fun fmtResetCountdown(resetMs: Long, nowMs: Long): String {
     val diff = resetMs - nowMs
-    if (diff <= 0) return "即将重置"
+    if (diff <= 0) return "resetting soon"
     val minutes = diff / 60000L
     return when {
-        minutes >= 1440 -> "%dd %02dh 后重置".format(minutes / 1440, (minutes % 1440) / 60)
-        minutes >= 60 -> "%dh %02dm 后重置".format(minutes / 60, minutes % 60)
-        else -> "${minutes}m 后重置"
+        minutes >= 1440 -> "in %dd %02dh".format(minutes / 1440, (minutes % 1440) / 60)
+        minutes >= 60 -> "in %dh %02dm".format(minutes / 60, minutes % 60)
+        else -> "in ${minutes}m"
     }
 }
 
-/** 长期桶到期提示：`2026-12-31 到期`。 */
+/** Long-lived bucket expiry hint: `expires 2026-12-31`. */
 private fun fmtExpiryDate(expMs: Long): String =
-    java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US).format(java.util.Date(expMs)) + " 到期"
+    java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US).format(java.util.Date(expMs)) + " expiry"
 
-/** credit 紧凑展示：≥1e8 亿 / ≥1e4 万（如 6.4万 / 10万），其余千分位。 */
+/** Compact credit display: >=1e8 Yi / >=1e4 Wan (e.g. 6.4W / 10W), otherwise thousands separators. */
 private fun fmtCredit(n: Long): String = when {
-    n >= 100_000_000L -> trimScale(n / 1e8) + "亿"
-    n >= 10_000L -> trimScale(n / 1e4) + "万"
+    n >= 100_000_000L -> trimScale(n / 1e8) + "Y"
+    n >= 10_000L -> trimScale(n / 1e4) + "W"
     else -> fmtCount(n)
 }
 
@@ -1629,7 +1629,7 @@ private fun CopyGlyph(color: Color) {
     }
 }
 
-/** Custom Tabs 打开 URL，无支持浏览器时回退系统 ACTION_VIEW；再失败静默（登录/更新下载共用）。 */
+/** Open URLs via Custom Tabs, falling back to system ACTION_VIEW when unsupported; silent on further failure (shared by login/update downloads). */
 private fun openInBrowser(context: android.content.Context, url: String) {
     val customTabsIntent = androidx.browser.customtabs.CustomTabsIntent.Builder()
         .setShowTitle(true)

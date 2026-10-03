@@ -2,7 +2,7 @@
  * OAuth flow handlers for Z.AI and Bigmodel.
  *
  * Verified against the ZCode 3.12.3 desktop bundle (`_reverse/NOTEPAD.md`
- * "OAuth 流程"; previous live-probe of the 3.10 flow):
+ * "OAuth flow"; previous live-probe of the 3.10 flow):
  *
  * - Both providers default to the **server-mediated CLI login** (bundle
  *   `startOAuthWithPolling`): POST `{provider}` to
@@ -21,7 +21,7 @@
  *   primary path but the protocol (authorize at `bigmodel.cn/login`, exchange
  *   at the shared zcode.z.ai token endpoint) is unchanged.
  *
- * @see _reverse/NOTEPAD.md "4. OAuth 流程"
+ * @see _reverse/NOTEPAD.md "4. OAuth flow"
  */
 import type { ProviderId } from "../provider/types.js";
 import { DEFAULT_APP_VERSION } from "../config/loader.js";

@@ -201,12 +201,12 @@ describe("buildFrame", () => {
     }
   });
 
-  test("no line exceeds the terminal width (CJK logs included)", () => {
+  test("no line exceeds the terminal width (wide-char logs included)", () => {
     const state = baseState({
       logTotal: 2,
       logView: [
-        { level: "info", text: "#001 上游连接失败 upstream connect failed after many retries with backoff" },
-        { level: "error", text: "🚀 emoji + 日本語テキスト mixing widths for truncation testing 1234567890" },
+        { level: "info", text: "#001 upstream connect failed after many retries with backoff" },
+        { level: "error", text: "🚀 emoji mixing widths for truncation testing 1234567890" },
       ],
     });
     for (const raw of buildFrame(state).text.split("\n")) {
@@ -269,7 +269,7 @@ describe("buildFrame", () => {
   });
 
   test("quota card renders coding-plan windows after credit buckets", () => {
-    const twoHoursOut = Date.now() + 2 * 3600e3; // ≤6h → positional "5 小时" label
+    const twoHoursOut = Date.now() + 2 * 3600e3; // <=6h -> positional "5h" label
     const text = plainLines(baseState({
       quota: {
         status: "ok",
@@ -289,12 +289,12 @@ describe("buildFrame", () => {
     expect(text).toContain("Balances");
     expect(text).toContain("Coding");
     // Window names are positional by reset time — raw upstream types never render.
-    expect(text).toContain("5 小时");
+    expect(text).toContain("5h");
     expect(text).not.toContain("TIME_LIMIT");
     // Mirror of the official panel: remaining alone — upstream `number` is not
     // a comparable total (live TIME_LIMIT row: remaining=3894, number=1).
-    expect(text).toContain("剩 36 prompt");
-    expect(text).toContain("后重置");
+    expect(text).toContain("36 prompt");
+    expect(text).toContain("in ");
     expect(text).toContain("· max");
     // No reset time → no semantic label either: honest fallback to the raw type.
     expect(text).toContain("WEEK_LIMIT");
@@ -323,10 +323,10 @@ describe("buildFrame", () => {
         error: "",
         fetchedAt: Date.now(),
       },
-    })).find((l) => l.includes("5 小时")) ?? "";
-    expect(codingLine).toContain("剩 9 次");
+    })).find((l) => l.includes("5h")) ?? "";
+    expect(codingLine).toContain("9 left");
     expect(codingLine).not.toContain("/");
-    expect(text).toContain("后重置");
+    expect(text).toContain("in ");
   });
 
   test("coding windows get semantic labels, bars and countdowns (live 2026-09-30 shape)", () => {
@@ -348,14 +348,14 @@ describe("buildFrame", () => {
         fetchedAt: now,
       },
     })).join("\n");
-    // Positional by reset asc: 4.5h → 5 小时, 3.75d → 每周, 14d → 月度.
-    expect(text).toContain("5 小时");
-    expect(text).toContain("每周");
-    expect(text).toContain("月度");
+    // Positional by reset asc: 4.5h -> 5h, 3.75d -> Weekly, 14d -> Monthly.
+    expect(text).toContain("5h");
+    expect(text).toContain("Weekly");
+    expect(text).toContain("Monthly");
     expect(text).not.toContain("TIME_LIMIT");
     expect(text).not.toContain("TOKENS_LIMIT");
-    expect(text).toContain("剩 3,891 次");
-    expect(text).toContain("剩 40%"); // 1 − 60%
+    expect(text).toContain("3,891 left");
+    expect(text).toContain("40% left"); // 1 - 60%
     const weeklyLine = plainLines(baseState({
       quota: {
         status: "ok",
@@ -372,11 +372,11 @@ describe("buildFrame", () => {
         error: "",
         fetchedAt: now,
       },
-    })).find((l) => l.includes("每周")) ?? "";
+    })).find((l) => l.includes("Weekly")) ?? "";
     expect(weeklyLine).toContain("["); // bracketed progress bar renders
     expect(weeklyLine).toContain("█");
     expect(weeklyLine).toContain("40%");
-    // 所有条形起点对齐同一列 —— 名称列按显示宽度补空格（"5 小时"6 格 vs "每周"4 格）
+    // All bar starts align in the same column — the name column is padded by display width ("5h" vs "Weekly")
     const barCols = plainLines(baseState({
       quota: {
         status: "ok",
@@ -514,8 +514,8 @@ describe("buildFrame", () => {
     const state = baseState({
       quota: {
         status: "ok",
-        balances: [{ showName: "超长模型名称测试超长模型名称测试超长模型名称", remainingUnits: 1234567890, totalUnits: 9876543210, expiresAt: 1735689600 }],
-        coding: { level: "an-unreasonably-long-tier-name-from-upstream", rows: [{ type: "超长窗口类型名称测试超长窗口类型名称测试", remaining: 1234567, nextResetTime: 1735689600 }] },
+        balances: [{ showName: "an-extremely-long-model-name-for-truncation-testing-xyz", remainingUnits: 1234567890, totalUnits: 9876543210, expiresAt: 1735689600 }],
+        coding: { level: "an-unreasonably-long-tier-name-from-upstream", rows: [{ type: "AN_EXTREMELY_LONG_WINDOW_TYPE_NAME_FOR_TESTING", remaining: 1234567, nextResetTime: 1735689600 }] },
         errors: [],
         error: "",
         fetchedAt: Date.now(),

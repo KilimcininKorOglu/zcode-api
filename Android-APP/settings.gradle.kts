@@ -1,6 +1,6 @@
 pluginManagement {
     repositories {
-        // 阿里云镜像优先（容器内境外 DNS 抖动），google/mavenCentral 兜底
+        // Alibaba Cloud mirror first (flaky offshore DNS inside containers), google/mavenCentral as fallback
         maven("https://maven.aliyun.com/repository/gradle-plugin")
         maven("https://maven.aliyun.com/repository/google")
         maven("https://maven.aliyun.com/repository/public")

@@ -19,14 +19,14 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 
-/** 外观三档：跟随系统（默认）/ 亮色 / 暗色。偏好存 SharedPreferences。 */
+/** Three appearance modes: follow system (default) / light / dark. Preference stored in SharedPreferences. */
 enum class ThemeMode {
     FOLLOW_SYSTEM,
     LIGHT,
     DARK,
 }
 
-/** 当前生效的暗色状态（含手动覆盖后），组件据此做暗色专属处理（如图标垫边）。 */
+/** Effective dark state (incl. manual override); components use it for dark-only tweaks (e.g. icon padding). */
 val LocalDarkTheme = staticCompositionLocalOf { false }
 
 @Composable
@@ -114,13 +114,13 @@ private val AppShapes = Shapes(
     extraLarge = RoundedCornerShape(28.dp),
 )
 
-/** 全局视觉缩放：整体缩小 5%（dp+sp 同缩），窄屏不易挤压。 */
+/** Global visual scale: shrink everything 5% (dp+sp together) so narrow screens are not squeezed. */
 private const val UiScale = 0.95f
 
 /**
- * 跟随系统同步链路：系统深色开关 → Configuration.uiMode 变化 →
- * MainActivity 未声明 configChanges，Activity 重建 → isSystemInDarkTheme()
- * 取新值重组。手动三档覆盖由调用方持久化后经 [themeMode] 传入。
+ * Follow-system sync chain: system dark toggle → Configuration.uiMode change →
+ * MainActivity declares no configChanges, so the Activity is recreated → isSystemInDarkTheme()
+ * recomposes with the new value. Manual three-way overrides are persisted by the caller and passed via [themeMode].
  */
 @Composable
 fun ZcodeTheme(
@@ -157,7 +157,7 @@ fun ZcodeTheme(
     }
 }
 
-/** 语义色取值捷径：在线/成功=松绿，429/等待=秋香·缃。 */
+/** Semantic color shortcuts: online/success = pine green, 429/waiting = ochre. */
 val lightSuccess = Color(0xFF21A675)
 val darkSuccess = Color(0xFF5BC89B)
 val lightWarning = Color(0xFFA9760B)
@@ -169,6 +169,6 @@ fun successColor(): Color = if (isSystemInDarkTheme()) darkSuccess else lightSuc
 @Composable
 fun warningColor(): Color = if (isSystemInDarkTheme()) darkWarning else lightWarning
 
-/** 卡片内的弱化文字（日志 dim / 提示）。 */
+/** Muted text inside cards (dimmed logs / hints). */
 @Composable
 fun dimColor(): Color = if (isSystemInDarkTheme()) DarkDim else LightDim

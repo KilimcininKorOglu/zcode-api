@@ -97,9 +97,9 @@ class ControlClient(private val controlPort: Int) {
     }
 
     /**
-     * 套餐用量快照（双平面：credits 积分桶 + coding monitor 窗口）。
-     * 服务端需发起 3 个上游请求，耗时高于 status；仅在用户进主屏/点按刷新时调用，
-     * 勿轮询（billing 网关限频）。
+     * Plan-usage snapshot (two planes: credits buckets + coding monitor windows).
+     * The server issues 3 upstream requests, slower than status; call only when the user opens the home screen / taps refresh,
+     * never poll (billing gateway is rate-limited).
      */
     suspend fun quota(): JSONObject? = withContext(Dispatchers.IO) {
         try {
