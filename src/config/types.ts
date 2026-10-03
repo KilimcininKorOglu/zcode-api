@@ -213,6 +213,14 @@ export interface ProxyConfig {
   provider: "zai" | "bigmodel";
   /** Which plan tier to use. "coding-plan" (default) uses direct upstream endpoints; "start-plan" routes through zcode.z.ai with JWT auth. */
   plan: "coding-plan" | "start-plan";
+  /**
+   * Hybrid plan auto-switch: prefer the start-plan (trial) entitlement while it
+   * has balance and switch to the coding plan automatically when it runs out
+   * (periodic balance poll plus a per-request fallback retry). When off or
+   * omitted, `plan` above is used exactly as configured. `loadConfig` always
+   * sets this; fixtures may omit it.
+   */
+  planAutoSwitch?: boolean;
   /** Per-provider endpoint overrides. */
   providers: {
     zai: ProviderEndpoints;

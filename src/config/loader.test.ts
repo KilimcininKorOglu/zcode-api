@@ -33,10 +33,56 @@ beforeEach(() => {
   delete process.env.ZCODE_CLAIM_POLL_INTERVAL_MS;
   delete process.env.ZCODE_MCP_GATEWAY;
   delete process.env.ZCODE_MCP_GATEWAY_ORIGIN;
+  delete process.env.ZCODE_PLAN_AUTO_SWITCH;
 });
 
 afterEach(() => {
   rmSync(TMP, { recursive: true, force: true });
+});
+
+describe("planAutoSwitch", () => {
+  it("defaults to false when the key is absent", () => {
+    const path = writeYaml(`
+server:
+  port: 9090
+provider: zai
+plan: coding-plan
+`);
+    expect(loadConfig(path).planAutoSwitch).toBe(false);
+  });
+
+  it("loads planAutoSwitch from YAML", () => {
+    const path = writeYaml(`
+server:
+  port: 9090
+provider: zai
+plan: coding-plan
+planAutoSwitch: true
+`);
+    expect(loadConfig(path).planAutoSwitch).toBe(true);
+  });
+
+  it("ZCODE_PLAN_AUTO_SWITCH overrides YAML", () => {
+    process.env.ZCODE_PLAN_AUTO_SWITCH = "1";
+    const path = writeYaml(`
+server:
+  port: 9090
+provider: zai
+plan: coding-plan
+planAutoSwitch: false
+`);
+    expect(loadConfig(path).planAutoSwitch).toBe(true);
+
+    process.env.ZCODE_PLAN_AUTO_SWITCH = "0";
+    const path2 = writeYaml(`
+server:
+  port: 9090
+provider: zai
+plan: coding-plan
+planAutoSwitch: true
+`);
+    expect(loadConfig(path2).planAutoSwitch).toBe(false);
+  });
 });
 
 describe("identity.deviceMid", () => {

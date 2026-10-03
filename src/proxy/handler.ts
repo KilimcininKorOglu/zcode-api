@@ -24,6 +24,7 @@ import { credentialString } from "../auth/types.js";
 import { sendOrderedUpstreamRequest, orderedAdvertisedCodings } from "./ordered-transport.js";
 import { transformRequestBody } from "./body-transformer.js";
 import { isCaptchaChallenged, retryOnCaptchaChallenge } from "./captcha-retry.js";
+import { activePlan, retryOnPlanExhausted, type PlanTier } from "../plan/auto.js";
 import { type ClientSessionResult } from "./client-session.js";
 import { resolveSessionContext } from "./session-context.js";
 import { gzipSync } from "node:zlib";
@@ -135,7 +136,10 @@ export async function proxyRequest(
   // retired server-side (404 as of 2026-08-28) — the live desktop client now
   // posts Anthropic messages to /api/v1/zcode-plan/anthropic/v1/messages with
   // the start-plan JWT, so we do the same (no OpenAI translation either way).
-  const startPlan = config.plan === "start-plan";
+  // The hybrid plan auto-switch resolves ONCE per request: the background
+  // watcher may flip the effective plan between requests, never mid-request.
+  let plan: PlanTier = activePlan(config);
+  let startPlan = plan === "start-plan";
   const translateAnthropicToOpenAI = false;
   const translateOpenAIToAnthropic = format === "openai";
   const upstreamFormat: Format = "anthropic";
@@ -161,7 +165,7 @@ export async function proxyRequest(
   // Bundle `E2e` fires for EVERY anthropic-kind request (both plans) — the
   // injected user_id is the device/session blob, never the account uuid.
   const metadataUserId = buildAnthropicMetadataUserId(config.identity.deviceMid, clientSession?.sessionId);
-  const transformedBody = transformRequestBody(upstreamBody, { format: upstreamFormat, metadataUserId, startPlan, provider: config.provider });
+  let transformedBody = transformRequestBody(upstreamBody, { format: upstreamFormat, metadataUserId, startPlan, provider: config.provider });
   if (debug && transformedBody !== upstreamBody) {
     debugLine(reqId, `body transformed (upstreamFormat=${upstreamFormat}, startPlan=${startPlan}, bytes=${transformedBody?.length ?? 0})`);
   }
@@ -178,8 +182,8 @@ export async function proxyRequest(
   }
 
   const useOrderedTransport = shouldUseOrderedTransport(config, clientSession, hasCustomFetchImpl);
-  let upstreamHeaderPairs = buildUpstreamHeaderPairs(clientReq, upstreamFormat, cred, config.identity, config.plan, captchaHeaders, clientSession);
-  let upstreamReq = buildUpstreamRequest(clientReq, upstreamFormat, provider, cred, transformedBody, config.identity, config.plan, captchaHeaders, clientSession);
+  let upstreamHeaderPairs = buildUpstreamHeaderPairs(clientReq, upstreamFormat, cred, config.identity, plan, captchaHeaders, clientSession);
+  let upstreamReq = buildUpstreamRequest(clientReq, upstreamFormat, provider, cred, transformedBody, config.identity, plan, captchaHeaders, clientSession);
 
   const routing = opts.endpointRouting !== undefined ? opts.endpointRouting : getDefaultEndpointRouting(config);
   const signer = opts.clientSigning !== undefined ? opts.clientSigning : getDefaultClientSigning(config);
@@ -273,7 +277,7 @@ export async function proxyRequest(
         dispatchAttempt += 1;
         const currentReq = dispatchAttempt === 1
           ? upstreamReq
-          : buildUpstreamRequest(clientReq, upstreamFormat, provider, cred, transformedBody, config.identity, config.plan, captchaHeaders, clientSession);
+          : buildUpstreamRequest(clientReq, upstreamFormat, provider, cred, transformedBody, config.identity, plan, captchaHeaders, clientSession);
         return dispatch(currentReq, upstreamHeaderPairs);
       },
       {
@@ -306,6 +310,36 @@ export async function proxyRequest(
     });
   }
 
+  // Hybrid plan auto-switch: the start-plan gateway rejected the request
+  // (rejected JWT / exhausted trial balance). Retry the SAME request once on
+  // the coding plan and cool start-plan down until the balance watcher sees
+  // credits again. Body + headers rebuild with the coding plan — the body
+  // transform (start-plan system) and the auth builder (JWT vs API key) are
+  // both plan-aware. No-op unless planAutoSwitch is on and the plan is
+  // start-plan.
+  {
+    const outcome = await retryOnPlanExhausted({
+      status: upstreamResp.status,
+      plan,
+      config,
+      onFallback: (message) => console.log(`${reqId} ${message}`),
+      rebuildAndDispatch: () => {
+        transformedBody = transformRequestBody(upstreamBody, { format: upstreamFormat, metadataUserId, startPlan: false, provider: config.provider });
+        upstreamHeaderPairs = buildUpstreamHeaderPairs(clientReq, upstreamFormat, cred, config.identity, "coding-plan", undefined, clientSession);
+        if (useOrderedTransport && translateMode) {
+          upstreamHeaderPairs = capOrderedAcceptEncoding(upstreamHeaderPairs);
+        }
+        upstreamReq = buildUpstreamRequest(clientReq, upstreamFormat, provider, cred, transformedBody, config.identity, "coding-plan", undefined, clientSession);
+        return dispatch(upstreamReq, upstreamHeaderPairs);
+      },
+    });
+    if (outcome.handled && outcome.resp) {
+      plan = "coding-plan";
+      startPlan = false;
+      upstreamResp = outcome.resp;
+    }
+  }
+
   if (upstreamResp.status === 401 && startPlan) {
     if (debug) debugError(reqId, "start_plan_jwt_invalid", "JWT rejected upstream");
     printRow(reqId, format, meta, 401, started, headersAt, 0, 0, 0);
@@ -329,11 +363,11 @@ export async function proxyRequest(
       debug: debug ? (message) => debugLine(reqId, message) : undefined,
       solveAndRetry: (retryHeaders) => {
         console.log(`${reqId} captcha re-solved (token ${retryHeaders[captcha.RETRY_HEADERS.PARAM].length} chars), retrying...`);
-        upstreamHeaderPairs = buildUpstreamHeaderPairs(clientReq, upstreamFormat, cred, config.identity, config.plan, retryHeaders, clientSession);
+        upstreamHeaderPairs = buildUpstreamHeaderPairs(clientReq, upstreamFormat, cred, config.identity, plan, retryHeaders, clientSession);
         if (useOrderedTransport && translateMode) {
           upstreamHeaderPairs = capOrderedAcceptEncoding(upstreamHeaderPairs);
         }
-        upstreamReq = buildUpstreamRequest(clientReq, upstreamFormat, provider, cred, transformedBody, config.identity, config.plan, retryHeaders, clientSession);
+        upstreamReq = buildUpstreamRequest(clientReq, upstreamFormat, provider, cred, transformedBody, config.identity, plan, retryHeaders, clientSession);
         return dispatch(upstreamReq, upstreamHeaderPairs).then((resp) => {
           if (debug) debugLine(reqId, `← retry ${resp.status} ${resp.statusText}`);
           return resp;

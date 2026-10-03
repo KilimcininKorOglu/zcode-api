@@ -30,6 +30,13 @@ provider: zai
 #   "start-plan"            — routes through zcode.z.ai with JWT auth (requires \`auth login\`)
 plan: coding-plan
 
+# Hybrid plan auto-switch: while on, the proxy prefers the start-plan (trial)
+# entitlement while it has balance and switches to the coding plan
+# automatically when it runs out (periodic balance poll + per-request
+# fallback). The \`plan\` key above then only applies while this is off.
+# Env override: ZCODE_PLAN_AUTO_SWITCH
+planAutoSwitch: false
+
 providers:
   zai:
     anthropicBase: "https://api.z.ai/api/anthropic"

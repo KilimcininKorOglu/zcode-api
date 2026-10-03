@@ -25,6 +25,7 @@ import { pasteLoginInstructions, readPastedLine, boldIfTTY } from "../runtime/pa
 import { isGuestOriginError, describeGuestError } from "../runtime/guest-error.js";
 import { ensureDeviceMidInConfig, VERSION, type ServeArgs } from "../index.js";
 import { collectQuotaSnapshot, type QuotaSnapshot } from "../server/routes-quota.js";
+import { activePlan } from "../plan/auto.js";
 import { appendFileSync } from "node:fs";
 import type { ProxyConfig } from "../config/types.js";
 import type { ProviderId } from "../provider/types.js";
@@ -186,7 +187,9 @@ export async function runTui(args: ServeArgs): Promise<void> {
         version: VERSION,
         configPath: path,
         provider: state.provider,
-        plan: state.plan,
+        // Under the hybrid plan auto-switch the card shows the tier that
+        // requests actually use right now, not the static config value.
+        plan: config.planAutoSwitch ? `${activePlan(config)} (auto)` : state.plan,
         loggedIn: state.loggedIn,
         apiKeyPreview: state.apiKeyPreview,
         loginInFlight: state.loginInFlight,
@@ -387,6 +390,14 @@ export async function runTui(args: ServeArgs): Promise<void> {
           console.log(`[claim] auto ON (poll ${Math.round(config.claim.pollIntervalMs / 1000)}s)`);
         })
         .catch((err) => console.error(`[claim] scheduler failed to start: ${(err as Error).message}`));
+    }
+    if (config.planAutoSwitch) {
+      import("../plan/auto.js")
+        .then((m) => {
+          m.startPlanAutoWatcher(config);
+          console.log(`[plan] auto-switch ON (poll ${Math.round(m.PLAN_POLL_INTERVAL_MS / 1000)}s)`);
+        })
+        .catch((err) => console.error(`[plan] auto-switch watcher failed to start: ${(err as Error).message}`));
     }
   }
 

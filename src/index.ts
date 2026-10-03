@@ -384,6 +384,7 @@ async function serve(configPath: string | undefined, debug: boolean): Promise<vo
   // Handles for the background timers started below, so `shutdown` can clear
   // them without the proxy handle being involved (issue #58 review, P2).
   let claimScheduler: { stop: () => void } | null = null;
+  let planWatcher: { stop: () => void } | null = null;
   let captchaModule: { shutdownCaptcha: () => void } | null = null;
 
   if (config.plan === "start-plan") {
@@ -404,8 +405,16 @@ async function serve(configPath: string | undefined, debug: boolean): Promise<vo
       })
       .catch((err) => console.error(`[claim] scheduler failed to start: ${(err as Error).message}`));
   }
+  if (config.planAutoSwitch) {
+    import("./plan/auto.js")
+      .then((m) => {
+        planWatcher = m.startPlanAutoWatcher(config);
+        console.log(`  plan auto-switch: ON (prefer start-plan while it has balance; poll ${Math.round(m.PLAN_POLL_INTERVAL_MS / 1000)}s)`);
+      })
+      .catch((err) => console.error(`[plan] auto-switch watcher failed to start: ${(err as Error).message}`));
+  }
   console.log(`  provider: ${config.provider}`);
-  console.log(`  plan: ${config.plan}`);
+  console.log(`  plan: ${config.plan}${config.planAutoSwitch ? " (auto-switch on: prefers start-plan while it has balance)" : ""}`);
   console.log(`  models: ${config.models.length} available`);
   if (config.responses.enabled) console.log(`  /v1/responses: ON`);
   if (config.async.enabled) {
@@ -439,6 +448,15 @@ async function serve(configPath: string | undefined, debug: boolean): Promise<vo
     shuttingDown = true;
     closePanel();
     const cleared: string[] = [];
+    if (planWatcher) {
+      try {
+        planWatcher.stop();
+        cleared.push("plan auto-switch");
+      } catch {
+        /* already stopped */
+      }
+      planWatcher = null;
+    }
     if (claimScheduler) {
       try {
         claimScheduler.stop();
@@ -582,6 +600,14 @@ async function runAndroid(): Promise<void> {
         console.log(`[claim] auto ON (poll ${Math.round(config.claim.pollIntervalMs / 1000)}s; waits for login)`);
       })
       .catch((err) => console.error(`[claim] scheduler failed to start: ${(err as Error).message}`));
+  }
+  if (config.planAutoSwitch) {
+    import("./plan/auto.js")
+      .then((m) => {
+        m.startPlanAutoWatcher(config);
+        console.log(`[plan] auto-switch ON (poll ${Math.round(m.PLAN_POLL_INTERVAL_MS / 1000)}s; waits for login)`);
+      })
+      .catch((err) => console.error(`[plan] auto-switch watcher failed to start: ${(err as Error).message}`));
   }
 
   const controlPort = Number(process.env.ZCODE_CONTROL_PORT ?? 0) || 0;

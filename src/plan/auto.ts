@@ -1,0 +1,198 @@
+/**
+ * Hybrid plan auto-switch — prefer the start-plan (trial) entitlement while it
+ * has balance and fall back to the coding plan when it runs out.
+ *
+ * Two mechanisms, mirroring existing repo patterns:
+ *  - A background watcher (`startPlanAutoWatcher`, ClaimScheduler skeleton in
+ *    ../claim/scheduler.ts) polls `billing/balance` every few minutes and
+ *    updates the effective plan.
+ *  - A per-request fallback seam (`retryOnPlanExhausted`, callback shape of
+ *    retryOnCaptchaChallenge in ../proxy/captcha-retry.ts): when the start-plan
+ *    gateway rejects a request with 401/402/403, the caller retries the SAME
+ *    request once on the coding plan; a cooldown then keeps traffic on the
+ *    coding plan until the watcher sees balance again.
+ *
+ * Handlers resolve the plan ONCE per request via `activePlan` — never read
+ * `config.plan` mid-request, the watcher may flip it between rebuilds.
+ *
+ * Module-level state follows the `getDefaultEndpointRouting`/
+ * `getDefaultClientSigning` singleton pattern; `__resetPlanAutoStateForTests`
+ * restores a clean slate in tests.
+ */
+import type { ProxyConfig } from "../config/types.js";
+import { fetchStartPlanBalance, type QuotaBalanceEntry } from "../server/routes-quota.js";
+
+export type PlanTier = "coding-plan" | "start-plan";
+
+/** Balance poll cadence — same default as the claim scheduler (5 min). */
+export const PLAN_POLL_INTERVAL_MS = 300_000;
+/** Stay on the coding plan after a fallback until the watcher sees balance. */
+export const PLAN_FALLBACK_COOLDOWN_MS = 600_000;
+/** Epoch values above this are milliseconds; upstream mixes seconds and ms in the wild. */
+const EPOCH_MS_THRESHOLD = 1e12;
+
+interface PlanAutoState {
+  /** Effective plan; null = no balance data yet → optimistically start-plan. */
+  effective: PlanTier | null;
+  fallbackCooldownUntil: number;
+  lastCheckAt: number;
+  lastError: string | null;
+}
+
+const state: PlanAutoState = {
+  effective: null,
+  fallbackCooldownUntil: 0,
+  lastCheckAt: 0,
+  lastError: null,
+};
+
+/**
+ * Plan a request should use. With `planAutoSwitch` off this is exactly
+ * `config.plan` (zero behavior change). With it on: the watcher's effective
+ * plan wins; before the first balance probe lands, start-plan is assumed
+ * (the per-request fallback corrects a wrong guess in one request).
+ */
+export function activePlan(config: ProxyConfig): PlanTier {
+  if (config.planAutoSwitch !== true) return config.plan;
+  if (state.effective) return state.effective;
+  if (Date.now() < state.fallbackCooldownUntil) return "coding-plan";
+  return "start-plan";
+}
+
+/**
+ * True when the upstream status on a start-plan request should trigger the
+ * one-shot coding-plan fallback. 429 is deliberately excluded: rate limiting
+ * is not plan exhaustion.
+ */
+export function shouldFallbackPlan(status: number, plan: PlanTier, config: ProxyConfig): boolean {
+  if (config.planAutoSwitch !== true) return false;
+  if (plan !== "start-plan") return false;
+  return status === 401 || status === 402 || status === 403;
+}
+
+/** Record a fallback: cool down start-plan and pin the effective plan to coding-plan until the watcher reassesses. */
+export function notePlanFallback(onSwitch?: (message: string) => void): void {
+  state.fallbackCooldownUntil = Date.now() + PLAN_FALLBACK_COOLDOWN_MS;
+  setEffective("coding-plan", `upstream rejected start-plan — cooldown ${Math.round(PLAN_FALLBACK_COOLDOWN_MS / 60_000)}min`, onSwitch);
+}
+
+export interface PlanFallbackOutcome {
+  handled: boolean;
+  /** The coding-plan retry's response; present when `handled` is true. */
+  resp?: Response;
+}
+
+/**
+ * Per-request fallback seam (callback shape mirrors retryOnCaptchaChallenge):
+ * when the start-plan gateway rejected the request with 401/402/403, run the
+ * caller's coding-plan rebuild + dispatch ONCE and record the cooldown first
+ * so concurrent requests skip the broken plan. `rebuildAndDispatch` errors
+ * propagate to the caller, which maps them onto its own 502 path.
+ */
+export async function retryOnPlanExhausted(args: {
+  status: number;
+  plan: PlanTier;
+  config: ProxyConfig;
+  rebuildAndDispatch: () => Promise<Response>;
+  onFallback?: (message: string) => void;
+}): Promise<PlanFallbackOutcome> {
+  if (!shouldFallbackPlan(args.status, args.plan, args.config)) return { handled: false };
+  notePlanFallback(args.onFallback);
+  const resp = await args.rebuildAndDispatch();
+  return { handled: true, resp };
+}
+
+function setEffective(next: PlanTier, reason: string, onSwitch?: (message: string) => void): void {
+  if (state.effective === next) return;
+  state.effective = next;
+  const message = `plan auto-switch: active plan is now ${next} (${reason})`;
+  (onSwitch ?? ((m: string) => console.log(m)))(message);
+}
+
+/** True when at least one balance bucket has remaining units and has not expired. */
+export function hasUsableBalance(entries: QuotaBalanceEntry[], nowMs: number = Date.now()): boolean {
+  return entries.some((e) => {
+    if (!(e.remainingUnits > 0)) return false;
+    if (e.expiresAt === undefined) return true;
+    const expiresMs = e.expiresAt > EPOCH_MS_THRESHOLD ? e.expiresAt : e.expiresAt * 1000;
+    return expiresMs > nowMs;
+  });
+}
+
+export interface PlanAutoWatcher {
+  stop(): void;
+  /** One balance probe → effective-plan update. Exposed for tests. */
+  tick(): Promise<void>;
+}
+
+export interface PlanAutoWatcherDeps {
+  fetchImpl?: typeof fetch;
+  loadCredentialImpl?: Parameters<typeof fetchStartPlanBalance>[2];
+}
+
+/**
+ * Start the background balance watcher. The first probe runs immediately so
+ * the optimistic start-plan assumption is corrected within one request; later
+ * probes run on a fixed interval. Stop it on shutdown like the claim
+ * scheduler (uncleared timers keep the process alive).
+ */
+export function startPlanAutoWatcher(config: ProxyConfig, deps: PlanAutoWatcherDeps = {}): PlanAutoWatcher {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const watcher: PlanAutoWatcher = {
+    stop(): void {
+      stopped = true;
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    },
+    async tick(): Promise<void> {
+      if (stopped) return;
+      state.lastCheckAt = Date.now();
+      let result: Awaited<ReturnType<typeof fetchStartPlanBalance>>;
+      try {
+        result = await fetchStartPlanBalance(config, deps.fetchImpl, deps.loadCredentialImpl);
+      } catch (err) {
+        state.lastError = (err as Error).message;
+        return;
+      }
+      if (result === null) {
+        // No plan JWT (login pending, e.g. Android before first login) — stay
+        // on config.plan semantics and retry on the next tick.
+        state.lastError = "no plan JWT (login pending)";
+        return;
+      }
+      if (!result.ok) {
+        state.lastError = result.error ?? "balance probe failed";
+        return;
+      }
+      state.lastError = null;
+      const has = hasUsableBalance(result.balances);
+      if (has) state.fallbackCooldownUntil = 0;
+      setEffective(
+        has ? "start-plan" : "coding-plan",
+        has ? "start-plan balance available" : "start-plan balance empty or expired",
+      );
+    },
+  };
+
+  const scheduleNext = (): void => {
+    if (stopped) return;
+    timer = setTimeout(() => {
+      timer = null;
+      void watcher.tick().finally(scheduleNext);
+    }, PLAN_POLL_INTERVAL_MS);
+  };
+  void watcher.tick().finally(scheduleNext);
+  return watcher;
+}
+
+/** Restore pristine module state in tests. */
+export function __resetPlanAutoStateForTests(): void {
+  state.effective = null;
+  state.fallbackCooldownUntil = 0;
+  state.lastCheckAt = 0;
+  state.lastError = null;
+}

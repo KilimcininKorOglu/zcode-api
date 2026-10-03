@@ -65,6 +65,7 @@ import {
 } from "../translator/responses-types.js";
 import { ResponseStore, type StoredResponse } from "../responses/store.js";
 import { errorResponse, readBody, InflatedBodyTooLargeError } from "./handler.js";
+import { activePlan, retryOnPlanExhausted, type PlanTier } from "../plan/auto.js";
 
 export interface ResponsesHandlerOptions {
   config: ProxyConfig;
@@ -164,9 +165,18 @@ export async function handleResponses(
   // Both plans post Anthropic upstream (mirrors handler.ts): the start-plan
   // OpenAI gateway was retired server-side (404 as of 2026-08-28), so the
   // Responses → Chat → Anthropic translator chain runs unconditionally.
-  const startPlan = opts.config.plan === "start-plan";
+  // The plan auto-switch resolves ONCE per request, like handler.ts.
+  let plan: PlanTier = activePlan(opts.config);
+  let startPlan = plan === "start-plan";
   const upstreamFormat: "openai" | "anthropic" = "anthropic";
-  let upstreamRequestBody: string;
+  // userId mirrors handler.ts for BOTH plans: the bundle's `E2e` is
+  // provider-kind gated only (never plan-gated), so start-plan carries the
+  // same device/session blob as coding-plan. The /v1/responses path has no
+  // client-session resolution — session_id falls back to "" (a legal `bnt`
+  // output in the bundle).
+  const metadataUserId = buildAnthropicMetadataUserId(opts.config.identity.deviceMid, undefined);
+  let transformedBody: string;
+  let anthropicJson: string;
   {
     let anthropicReq: AnthropicMessagesRequest;
     try {
@@ -174,19 +184,16 @@ export async function handleResponses(
     } catch (err) {
       return errorResponse(400, "translation_failed", `Chat→Anthropic translation failed: ${(err as Error).message}`);
     }
-    // userId mirrors handler.ts for BOTH plans: the bundle's `E2e` is
-    // provider-kind gated only (never plan-gated), so start-plan carries the
-    // same device/session blob as coding-plan. The /v1/responses path has no
-    // client-session resolution — session_id falls back to "" (a legal `bnt`
-    // output in the bundle).
-    upstreamRequestBody = transformRequestBody(JSON.stringify(anthropicReq), {
+    // anthropicJson stays untouched by the plan-specific transform so the
+    // plan-fallback below can re-transform it for the coding plan.
+    anthropicJson = JSON.stringify(anthropicReq);
+    transformedBody = transformRequestBody(anthropicJson, {
       format: "anthropic",
-      metadataUserId: buildAnthropicMetadataUserId(opts.config.identity.deviceMid, undefined),
+      metadataUserId,
       startPlan,
       provider: opts.config.provider,
-    }) ?? JSON.stringify(anthropicReq);
+    }) ?? anthropicJson;
   }
-  const transformedBody = upstreamRequestBody;
 
   // ── 6. POST upstream ──
   // start-plan gates every upstream call behind an Aliyun captcha token. The
@@ -203,8 +210,8 @@ export async function handleResponses(
       // Fall through: the 3007 retry below solves on demand.
     }
   }
-  const upstreamHeaders = buildUpstreamHeaderPairs(clientReq, upstreamFormat, cred, opts.config.identity, opts.config.plan, captchaHeaders, undefined);
-  const upstreamReq = buildUpstreamRequest(clientReq, upstreamFormat, providerDef, cred, transformedBody, opts.config.identity, opts.config.plan, captchaHeaders, undefined);
+  let upstreamHeaders = buildUpstreamHeaderPairs(clientReq, upstreamFormat, cred, opts.config.identity, plan, captchaHeaders, undefined);
+  let upstreamReq = buildUpstreamRequest(clientReq, upstreamFormat, providerDef, cred, transformedBody, opts.config.identity, plan, captchaHeaders, undefined);
   if (debug) console.log(`[responses] → POST ${upstreamReq.url}`);
 
   const routing = opts.endpointRouting !== undefined ? opts.endpointRouting : getDefaultEndpointRouting(opts.config);
@@ -244,6 +251,36 @@ export async function handleResponses(
     return errorResponse(502, "upstream_unreachable", (err as Error).message);
   }
 
+  // Hybrid plan auto-switch (mirrors handler.ts): on a start-plan 401/402/403
+  // retry the SAME request once on the coding plan — body, headers and URL
+  // all rebuild with the coding plan (the start-plan system prompt and the
+  // JWT auth are both baked into the start-plan variants). Runs before the
+  // captcha retry so a dead plan never spends a pooled token.
+  {
+    const outcome = await retryOnPlanExhausted({
+      status: upstreamResp.status,
+      plan,
+      config: opts.config,
+      onFallback: (message) => console.log(`[responses] ${message}`),
+      rebuildAndDispatch: () => {
+        transformedBody = transformRequestBody(anthropicJson, {
+          format: "anthropic",
+          metadataUserId,
+          startPlan: false,
+          provider: opts.config.provider,
+        }) ?? anthropicJson;
+        upstreamHeaders = buildUpstreamHeaderPairs(clientReq, upstreamFormat, cred, opts.config.identity, "coding-plan", undefined, undefined);
+        upstreamReq = buildUpstreamRequest(clientReq, upstreamFormat, providerDef, cred, transformedBody, opts.config.identity, "coding-plan", undefined, undefined);
+        return dispatch(upstreamHeaders);
+      },
+    });
+    if (outcome.handled && outcome.resp) {
+      plan = "coding-plan";
+      startPlan = false;
+      upstreamResp = outcome.resp;
+    }
+  }
+
   // Captcha challenge retry (mirrors handler.ts via the shared captcha-retry
   // seam): the gateway signals it either through the captcha response header
   // or as HTTP 400 with {"code":3007} in the body. The challenged token is
@@ -258,7 +295,7 @@ export async function handleResponses(
         challengedResp: upstreamResp,
         debug: debug ? (message) => console.log(`[responses] ${message}`) : undefined,
         solveAndRetry: (retryHeaders) => dispatch(
-          buildUpstreamHeaderPairs(clientReq, upstreamFormat, cred, opts.config.identity, opts.config.plan, retryHeaders, undefined),
+          buildUpstreamHeaderPairs(clientReq, upstreamFormat, cred, opts.config.identity, plan, retryHeaders, undefined),
         ),
         mapError: (err, phase) =>
           phase === "solver"
