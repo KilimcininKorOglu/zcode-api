@@ -23,6 +23,7 @@ so Claude Code, Codex, Silly Tavern ... can all use your plan quota directly.
 - 📱 **Android app** —— start/stop the proxy on your phone, watch live logs, switch providers, handy when away from your desk.
 - 💬 **Built-in web chat** —— open `/webui` for a local ChatGPT-style chat page to test models quickly.
 - 🌙 **Idle channel & instant plan claiming** (optional) —— a free off-peak compute channel plus automatic claiming of limited trial plans, both built in.
+- 🔀 **Hybrid plan auto-switch** (optional) —— holding both a trial start-plan and a personal coding-plan? The proxy spends the expiring trial credits first and falls back to the coding plan automatically when they run out (`planAutoSwitch`).
 - 🔌 **In-plan MCP relay** —— relays ZCode official plugin MCPs (Tianyancha / Wind / Tonghuashun iFinD ...) to local `/mcp/*` (requires coding-plan login, `GET /mcp` lists them); the built-in web chat can also attach your own MCP servers as model tools.
 - 🪟 **All platforms** —— Windows / macOS / Linux from one codebase; also compiles to a single-file binary or Docker deployment.
 
@@ -36,7 +37,7 @@ After launch you enter the terminal control panel (this is the main UI):
 
 <img src="docs/images/tui-annotated.png" alt="ZCode Proxy terminal control panel" width="980" />
 
-The panel has four cards: **Login & settings** (provider / plan / login), **Plan usage** (remaining-ratio bar + reset countdown, press <kbd>r</kbd> or click Refresh), **Proxy service** (start/stop / current config), **Logs** (one line per request, live scrolling). Press <kbd>s</kbd> to start the proxy; once you see `Status: running` you are ready.
+The panel has four cards: **Login & settings** (provider / plan / login), **Plan usage** (remaining-ratio bar + reset countdown, press <kbd>r</kbd> or click Refresh), **Proxy service** (start/stop / current config), **Logs** (one line per request, live scrolling; each row shows the serving plan and human-readable durations such as `13.0s` / `1m0s`). Press <kbd>s</kbd> to start the proxy; once you see `Status: running` you are ready.
 
 > Prefer not to use keyboard shortcuts? Buttons on the panel support **mouse clicks**. Want it to run silently in the background? `zcode-proxy.exe --cli serve`.
 
@@ -63,6 +64,8 @@ About "API Key": if you set `auth.proxyApiKey` in config (or env var `ZCODE_PROX
 <details>
 <summary><b>Claude Code</b> (click to expand)</summary>
 
+Environment variables for one shell session:
+
 ```bash
 # macOS / Linux
 export ANTHROPIC_BASE_URL=http://127.0.0.1:8080
@@ -77,6 +80,18 @@ $env:ANTHROPIC_BASE_URL = "http://127.0.0.1:8080"
 $env:ANTHROPIC_AUTH_TOKEN = "sk-1234"
 $env:ANTHROPIC_MODEL = "glm-4.7"
 claude
+```
+
+Or apply it permanently to every Claude Code session through `~/.claude/settings.json` (same variables, no shell changes needed):
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8080",
+    "ANTHROPIC_AUTH_TOKEN": "sk-1234",
+    "ANTHROPIC_MODEL": "glm-4.7"
+  }
+}
 ```
 
 </details>
@@ -137,6 +152,25 @@ Phone and desktop run the same core: the app embeds the full proxy engine, **the
 <details>
 <summary><b>Docker deployment</b></summary>
 
+**Easiest way — Compose from this repo.** Everything persistent lives in `./docker-data/` (config + credentials), the proxy is reachable on `http://127.0.0.1:8080`, and log timestamps render in Europe/Istanbul time:
+
+```bash
+git clone https://github.com/KilimcininKorOglu/zcode-api && cd zcode-api
+mkdir -p docker-data
+echo 'ZCODE_PROXY_CREDENTIAL_SECRET=a-secret-passphrase-only-you-know' > .env
+
+# Log in once (no browser needed on the server: open the printed link on any
+# device and the login completes automatically). The credential is stored in
+# docker-data/credentials.json and survives container recreation.
+docker compose run --rm zcode-proxy bun run src/index.ts auth login zai
+
+docker compose up -d --build
+```
+
+Tune the running container through `docker-data/config.yaml` (auto-created on first start, fully commented): set `planAutoSwitch: true` there for the hybrid plan auto-switch, then `docker compose restart`. Updating later is `git pull && docker compose up -d --build` (build + recreate in one command).
+
+**Or use the prebuilt image** without cloning (multi-arch amd64 / arm64, runs as `bun` user):
+
 ```bash
 # Log in on the host with a fixed encryption seed (both providers are callback-free: open the link on any device and login completes automatically)
 ZCODE_PROXY_CREDENTIAL_SECRET="a-secret-passphrase-only-you-know" \
@@ -148,8 +182,6 @@ docker run -d --name zcode-proxy -p 8080:8080 \
   -e ZCODE_PROXY_CREDENTIAL_SECRET="a-secret-passphrase-only-you-know" \
   ghcr.io/tridefender/zcode-proxy:latest
 ```
-
-Multi-arch image (amd64 / arm64), runs as `bun` user. Compose example:
 
 ```yaml
 services:
@@ -217,11 +249,13 @@ Then open `http://127.0.0.1:8090`. In host mode the main proxy port also occupie
 </details>
 
 <details>
-<summary><b>Advanced features: idle channel & automatic plan claiming</b></summary>
+<summary><b>Advanced features: idle channel, plan claiming & auto-switch</b></summary>
 
 **Idle channel (`/async/*`)** —— free compute released by the vendor during off-peak hours such as late night. Requests queue for a ticket first and are sent to the model automatically when it is their turn (good for unhurried batch jobs). Enable with `async.enabled: true` in `config.yaml`; note it is one-shot with no session memory — include history in the request for multi-turn chats.
 
 **Weekend/trial plan auto-claim (claim)** —— enabled by default. Every 5 minutes the proxy probes the vendor's limited plan campaign page and auto-claims for you the moment a new offer drops (`claim.enabled: false` disables it). Manual claim: `bun run src/index.ts claim`.
+
+**Hybrid plan auto-switch (`planAutoSwitch`)** —— pairs with auto-claim. Accounts can hold both a trial start-plan (points bucket, expires) and a personal coding-plan (rolling windows, resets). Off by default the static `plan` config applies as-is; with `planAutoSwitch: true` in config (or `ZCODE_PLAN_AUTO_SWITCH=1`), a background watcher polls `billing/balance` every 5 minutes and routes requests to the start-plan while it still has unexpired balance. If the start-plan gateway rejects a request (401/402/403), the same request is retried once on the coding plan and start-plan cools down for 10 minutes until the watcher sees balance again — so trial credits are never wasted, and coding-plan requests are never blocked by a broken trial tier. The TUI plan card shows the tier requests actually use with an `(auto)` marker, and the request log row carries a Plan column (`start-plan` / `coding-plan`).
 
 **Quota display (quota)** —— after login the panel queries quota once automatically, then press <kbd>r</kbd> to refresh manually. Data comes from two upstream quota planes: the points bucket for trial/points-based plans (`billing/balance`, remaining / total, expiry), and the usage window for personal coding plans (`/api/monitor/usage/quota/limit`, same source as the official usage panel, **remaining quota** and reset time for the 5-hour / weekly windows — upstream `number` is not a comparable total, so CLI/TUI consistently show only the remainder and draw a ratio bar only when upstream provides a percentage). Query from CLI directly: `bun run src/index.ts quota` (HTTP equivalent `GET /quota`). Note upstream gateways rate-limit frequent queries, so the panel does no timed polling.
 
