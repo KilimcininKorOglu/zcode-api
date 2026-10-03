@@ -140,6 +140,7 @@ export async function proxyRequest(
   // watcher may flip the effective plan between requests, never mid-request.
   let plan: PlanTier = activePlan(config);
   let startPlan = plan === "start-plan";
+  meta.plan = plan;
   const translateAnthropicToOpenAI = false;
   const translateOpenAIToAnthropic = format === "openai";
   const upstreamFormat: Format = "anthropic";
@@ -336,6 +337,7 @@ export async function proxyRequest(
     if (outcome.handled && outcome.resp) {
       plan = "coding-plan";
       startPlan = false;
+      meta.plan = plan;
       upstreamResp = outcome.resp;
     }
   }
@@ -846,6 +848,8 @@ function translatedSseResponse(body: ReadableStream<Uint8Array>): Response {
 export interface RequestMeta {
   model: string;
   stream: boolean;
+  /** Plan the request is served on, set by proxyRequest after resolution. */
+  plan?: PlanTier;
 }
 
 function peekBody(body: string | undefined): RequestMeta {
@@ -937,10 +941,10 @@ function printHeader(): void {
   headerPrinted = true;
   if (COMPACT_LOG) return;
   console.log(
-    "| #    | Time       | Fmt | Model       | Mode   | Stat |    TTFB |   Tok |  tok/s |   Total |",
+    "| #    | Time       | Fmt | Plan        | Model       | Mode   | Stat |    TTFB |   Tok |  tok/s |   Total |",
   );
   console.log(
-    "|------|------------|-----|-------------|--------|------|---------|-------|--------|---------|",
+    "|------|------------|-----|-------------|-------------|--------|------|---------|-------|--------|---------|",
   );
 }
 
@@ -985,7 +989,7 @@ export function printRow(
   const tok = tokens > 0 ? String(tokens) : "-";
   const tps = avgTps > 0 ? avgTps.toFixed(1) : "-";
   console.log(
-    `| ${reqId.padEnd(4)} | ${ts.padEnd(10)} | ${tag} | ${meta.model.padEnd(11)} | ${mode.padEnd(6)} | ${String(status).padStart(4)} | ${ttfb.padStart(7)} | ${tok.padStart(5)} | ${tps.padStart(6)} | ${total.padStart(7)} |`,
+    `| ${reqId.padEnd(4)} | ${ts.padEnd(10)} | ${tag} | ${(meta.plan ?? "-").padEnd(11)} | ${meta.model.padEnd(11)} | ${mode.padEnd(6)} | ${String(status).padStart(4)} | ${ttfb.padStart(7)} | ${tok.padStart(5)} | ${tps.padStart(6)} | ${total.padStart(7)} |`,
   );
 }
 

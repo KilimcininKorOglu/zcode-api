@@ -42,3 +42,20 @@ describe("request log row durations", () => {
     expect(out).toContain("   - |");
   });
 });
+
+describe("request log row plan column", () => {
+  it("shows the serving plan between Fmt and Model", async () => {
+    const out = await captureRow(
+      { model: "glm-5.3-flash", stream: true, plan: "start-plan" },
+      0,
+      7_900,
+      34_100,
+    );
+    expect(out).toContain("| ANT | start-plan  | glm-5.3-flash |");
+  });
+
+  it("shows - when the plan was never resolved", async () => {
+    const out = await captureRow({ model: "glm-4.6", stream: false }, 0, 850, 0);
+    expect(out).toContain(`| ${"-".padEnd(11)} | glm-4.6`);
+  });
+});
