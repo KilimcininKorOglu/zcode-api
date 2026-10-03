@@ -24,7 +24,7 @@ import { credentialString } from "../auth/types.js";
 import { sendOrderedUpstreamRequest, orderedAdvertisedCodings } from "./ordered-transport.js";
 import { transformRequestBody } from "./body-transformer.js";
 import { isCaptchaChallenged, retryOnCaptchaChallenge } from "./captcha-retry.js";
-import { activePlan, retryOnPlanExhausted, type PlanTier } from "../plan/auto.js";
+import { activePlan, retryOnPlanExhausted, sniffStartPlanRejection, shouldFallbackPlan, type PlanTier } from "../plan/auto.js";
 import { type ClientSessionResult } from "./client-session.js";
 import { resolveSessionContext } from "./session-context.js";
 import { gzipSync } from "node:zlib";
@@ -317,10 +317,18 @@ export async function proxyRequest(
   // credits again. Body + headers rebuild with the coding plan — the body
   // transform (start-plan system) and the auth builder (JWT vs API key) are
   // both plan-aware. No-op unless planAutoSwitch is on and the plan is
-  // start-plan.
+  // start-plan. Rejection covers error statuses AND HTTP 200 with a JSON
+  // error envelope — the gateway exhausts a plan that way too (observed live:
+  // 200 + non-Anthropic JSON, the client saw "0 stream events").
+  let planRejected = shouldFallbackPlan(upstreamResp.status, plan, config);
+  if (!planRejected && config.planAutoSwitch === true && plan === "start-plan" && upstreamResp.status === 200) {
+    const sniff = await sniffStartPlanRejection(upstreamResp);
+    planRejected = sniff.rejected;
+    upstreamResp = sniff.response;
+  }
   {
     const outcome = await retryOnPlanExhausted({
-      status: upstreamResp.status,
+      rejected: planRejected,
       plan,
       config,
       onFallback: (message) => console.log(`${reqId} ${message}`),

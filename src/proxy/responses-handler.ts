@@ -65,7 +65,7 @@ import {
 } from "../translator/responses-types.js";
 import { ResponseStore, type StoredResponse } from "../responses/store.js";
 import { errorResponse, readBody, InflatedBodyTooLargeError } from "./handler.js";
-import { activePlan, retryOnPlanExhausted, type PlanTier } from "../plan/auto.js";
+import { activePlan, retryOnPlanExhausted, shouldFallbackPlan, sniffStartPlanRejection, type PlanTier } from "../plan/auto.js";
 
 export interface ResponsesHandlerOptions {
   config: ProxyConfig;
@@ -251,14 +251,21 @@ export async function handleResponses(
     return errorResponse(502, "upstream_unreachable", (err as Error).message);
   }
 
-  // Hybrid plan auto-switch (mirrors handler.ts): on a start-plan 401/402/403
+  // Hybrid plan auto-switch (mirrors handler.ts): on a start-plan rejection
   // retry the SAME request once on the coding plan — body, headers and URL
   // all rebuild with the coding plan (the start-plan system prompt and the
   // JWT auth are both baked into the start-plan variants). Runs before the
-  // captcha retry so a dead plan never spends a pooled token.
+  // captcha retry so a dead plan never spends a pooled token. Rejection
+  // covers error statuses AND HTTP 200 with a JSON error envelope.
+  let planRejected = shouldFallbackPlan(upstreamResp.status, plan, opts.config);
+  if (!planRejected && opts.config.planAutoSwitch === true && plan === "start-plan" && upstreamResp.status === 200) {
+    const sniff = await sniffStartPlanRejection(upstreamResp);
+    planRejected = sniff.rejected;
+    upstreamResp = sniff.response;
+  }
   {
     const outcome = await retryOnPlanExhausted({
-      status: upstreamResp.status,
+      rejected: planRejected,
       plan,
       config: opts.config,
       onFallback: (message) => console.log(`[responses] ${message}`),

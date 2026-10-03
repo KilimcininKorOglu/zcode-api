@@ -137,6 +137,64 @@ describe("proxyRequest — hybrid plan auto-switch fallback", () => {
     expect(resp.status).toBe(200);
   });
 
+  it("retries a 200 JSON error envelope on the coding plan (live incident shape)", async () => {
+    // 2026-10-03 incident: the gateway exhausted the start-plan with HTTP 200
+    // + a JSON error envelope instead of an error status, so the status-based
+    // fallback never fired and the client saw "0 stream events".
+    const calls: RecordedCall[] = [];
+    const fetchImpl = Object.assign(
+      (async (req: Request): Promise<Response> => {
+        calls.push({
+          url: req.url,
+          authorization: req.headers.get("authorization"),
+          apiKey: req.headers.get("x-api-key"),
+          body: await req.clone().text(),
+        });
+        if (req.url.includes("/api/v1/zcode-plan/")) {
+          return new Response(JSON.stringify({ code: 530, msg: "insufficient balance" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response(ANTHROPIC_OK, { status: 200, headers: { "content-type": "application/json" } });
+      }) as typeof fetch,
+      { preconnect: () => {} },
+    ) as typeof fetch;
+    const config: ProxyConfig = { ...TEST_CONFIG, planAutoSwitch: true };
+    const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0].url).toContain("/api/v1/zcode-plan/");
+    expect(calls[1].url).toContain("https://api.z.ai/api/anthropic");
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as { id?: string };
+    expect(body.id).toBe("msg_1");
+    expect(activePlan(config)).toBe("coding-plan");
+  });
+
+  it("passes a valid 200 start-plan response through without falling back", async () => {
+    const calls: RecordedCall[] = [];
+    const fetchImpl = Object.assign(
+      (async (req: Request): Promise<Response> => {
+        calls.push({
+          url: req.url,
+          authorization: req.headers.get("authorization"),
+          apiKey: req.headers.get("x-api-key"),
+          body: await req.clone().text(),
+        });
+        return new Response(ANTHROPIC_OK, { status: 200, headers: { "content-type": "application/json" } });
+      }) as typeof fetch,
+      { preconnect: () => {} },
+    ) as typeof fetch;
+    const config: ProxyConfig = { ...TEST_CONFIG, planAutoSwitch: true };
+    const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toContain("/api/v1/zcode-plan/");
+    expect(resp.status).toBe(200);
+    expect(activePlan(config)).toBe("start-plan");
+  });
+
   it("passes a start-plan 402 through untouched when planAutoSwitch is off", async () => {
     const calls: RecordedCall[] = [];
     const config: ProxyConfig = { ...TEST_CONFIG, planAutoSwitch: false };

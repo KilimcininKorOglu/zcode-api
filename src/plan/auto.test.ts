@@ -8,9 +8,11 @@ import {
   hasUsableBalance,
   notePlanFallback,
   shouldFallbackPlan,
+  sniffStartPlanRejection,
   startPlanAutoWatcher,
   PLAN_FALLBACK_COOLDOWN_MS,
   __resetPlanAutoStateForTests,
+  __setFallbackCooldownForTests,
 } from "./auto.js";
 import type { QuotaBalanceEntry } from "../server/routes-quota.js";
 import type { ProxyConfig } from "../config/types.js";
@@ -142,7 +144,7 @@ describe("watcher tick", () => {
     watcher.stop();
   });
 
-  it("clears the fallback cooldown when balance returns", async () => {
+  it("holds coding-plan through an active fallback cooldown even with balance", async () => {
     const cfg = makeConfig();
     notePlanFallback();
     expect(activePlan(cfg)).toBe("coding-plan");
@@ -151,8 +153,62 @@ describe("watcher tick", () => {
       loadCredentialImpl: (() => Promise.resolve({ apiKey: "k", jwt: "j", provider: "zai" })) as never,
     });
     await watcher.tick();
+    // The gateway may still report balance while rejecting requests; hold
+    // coding-plan until the cooldown lapses so the plans do not flap.
+    expect(activePlan(cfg)).toBe("coding-plan");
+    watcher.stop();
+  });
+
+  it("returns to start-plan once the cooldown lapses with balance available", async () => {
+    const cfg = makeConfig();
+    notePlanFallback();
+    __setFallbackCooldownForTests(Date.now() - 1);
+    const watcher = startPlanAutoWatcher(cfg, {
+      fetchImpl: fetchWithBalances([{ show_name: "w", remaining_units: 7, expires_at: Math.floor(Date.now() / 1000) + 3600 }]),
+      loadCredentialImpl: (() => Promise.resolve({ apiKey: "k", jwt: "j", provider: "zai" })) as never,
+    });
+    await watcher.tick();
     expect(activePlan(cfg)).toBe("start-plan");
     watcher.stop();
+  });
+});
+
+describe("sniffStartPlanRejection", () => {
+  const jsonResponse = (body: string): Response =>
+    new Response(body, { status: 200, headers: { "content-type": "application/json" } });
+
+  it("rejects a 200 JSON error envelope (live incident shape)", async () => {
+    const r = await sniffStartPlanRejection(jsonResponse(JSON.stringify({ code: 530, msg: "insufficient balance" })));
+    expect(r.rejected).toBe(true);
+  });
+
+  it("rejects success:false envelopes", async () => {
+    const r = await sniffStartPlanRejection(jsonResponse(JSON.stringify({ success: false, msg: "no" })));
+    expect(r.rejected).toBe(true);
+  });
+
+  it("accepts a real Anthropic message body and buffers it for passthrough", async () => {
+    const body = JSON.stringify({ id: "msg_1", type: "message", role: "assistant", content: [] });
+    const r = await sniffStartPlanRejection(jsonResponse(body));
+    expect(r.rejected).toBe(false);
+    expect(await r.response.text()).toBe(body);
+  });
+
+  it("leaves code 3007 to the captcha retry seam", async () => {
+    const r = await sniffStartPlanRejection(jsonResponse(JSON.stringify({ code: 3007, msg: "captcha verify failed" })));
+    expect(r.rejected).toBe(false);
+  });
+
+  it("passes SSE responses through untouched", async () => {
+    const resp = new Response("event: message_start", { status: 200, headers: { "content-type": "text/event-stream" } });
+    const r = await sniffStartPlanRejection(resp);
+    expect(r.rejected).toBe(false);
+    expect(r.response).toBe(resp);
+  });
+
+  it("treats oversized JSON as a real payload, not an error", async () => {
+    const r = await sniffStartPlanRejection(jsonResponse(JSON.stringify({ code: 1, pad: "x".repeat(70_000) })));
+    expect(r.rejected).toBe(false);
   });
 });
 

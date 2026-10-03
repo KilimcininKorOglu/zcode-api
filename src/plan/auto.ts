@@ -70,6 +70,41 @@ export function shouldFallbackPlan(status: number, plan: PlanTier, config: Proxy
   return status === 401 || status === 402 || status === 403;
 }
 
+/** JSON error envelopes larger than this are treated as real payloads, not errors. */
+const SNIFF_CAP_BYTES = 65536;
+
+/**
+ * The start-plan gateway can exhaust a plan with HTTP 200 + a JSON error
+ * envelope instead of an error status (observed live 2026-10-03: 200 +
+ * non-Anthropic JSON body, Claude Code saw "0 stream events"). Sniff small
+ * JSON responses for such an envelope before trusting them. SSE responses
+ * and non-JSON bodies pass through untouched; a non-error JSON body comes
+ * back buffered so the caller can still serve it.
+ *
+ * Envelope criteria mirror the billing gateway's (`isSuccessfulEnvelope` in
+ * routes-quota.ts): `success === false`, or a numeric `code` outside
+ * {0, 200}. Code 3007 is excluded — that is a captcha challenge, owned by
+ * the captcha retry seam.
+ */
+export async function sniffStartPlanRejection(resp: Response): Promise<{ rejected: boolean; response: Response }> {
+  const contentType = resp.headers.get("content-type") ?? "";
+  const passthrough = { rejected: false, response: resp };
+  if (!contentType.includes("json")) return passthrough;
+  const text = await resp.text();
+  const buffered = { status: resp.status, statusText: resp.statusText, headers: resp.headers };
+  if (text.length > SNIFF_CAP_BYTES) return { rejected: false, response: new Response(text, buffered) };
+  let body: { code?: unknown; success?: unknown };
+  try {
+    body = JSON.parse(text) as { code?: unknown; success?: unknown };
+  } catch {
+    return { rejected: false, response: new Response(text, buffered) };
+  }
+  const numericCode = typeof body.code === "number" ? body.code : undefined;
+  const rejected = body.success === false
+    || (numericCode !== undefined && numericCode !== 0 && numericCode !== 200 && numericCode !== 3007);
+  return { rejected, response: new Response(text, buffered) };
+}
+
 /** Record a fallback: cool down start-plan and pin the effective plan to coding-plan until the watcher reassesses. */
 export function notePlanFallback(onSwitch?: (message: string) => void): void {
   state.fallbackCooldownUntil = Date.now() + PLAN_FALLBACK_COOLDOWN_MS;
@@ -84,19 +119,22 @@ export interface PlanFallbackOutcome {
 
 /**
  * Per-request fallback seam (callback shape mirrors retryOnCaptchaChallenge):
- * when the start-plan gateway rejected the request with 401/402/403, run the
- * caller's coding-plan rebuild + dispatch ONCE and record the cooldown first
- * so concurrent requests skip the broken plan. `rebuildAndDispatch` errors
+ * when the start-plan gateway rejected the request (error status OR a 200
+ * JSON error envelope, both detected by the caller), run the caller's
+ * coding-plan rebuild + dispatch ONCE and record the cooldown first so
+ * concurrent requests skip the broken plan. `rebuildAndDispatch` errors
  * propagate to the caller, which maps them onto its own 502 path.
  */
 export async function retryOnPlanExhausted(args: {
-  status: number;
+  rejected: boolean;
   plan: PlanTier;
   config: ProxyConfig;
   rebuildAndDispatch: () => Promise<Response>;
   onFallback?: (message: string) => void;
 }): Promise<PlanFallbackOutcome> {
-  if (!shouldFallbackPlan(args.status, args.plan, args.config)) return { handled: false };
+  if (!args.rejected) return { handled: false };
+  if (args.config.planAutoSwitch !== true) return { handled: false };
+  if (args.plan !== "start-plan") return { handled: false };
   notePlanFallback(args.onFallback);
   const resp = await args.rebuildAndDispatch();
   return { handled: true, resp };
@@ -170,10 +208,19 @@ export function startPlanAutoWatcher(config: ProxyConfig, deps: PlanAutoWatcherD
       }
       state.lastError = null;
       const has = hasUsableBalance(result.balances);
-      if (has) state.fallbackCooldownUntil = 0;
+      // During the fallback cooldown the gateway's balance may still report
+      // credit while requests are actually rejected — hold coding-plan until
+      // the cooldown lapses so the two plans do not flap.
+      const cooling = Date.now() < state.fallbackCooldownUntil;
+      const goStart = has && !cooling;
+      if (goStart) state.fallbackCooldownUntil = 0;
       setEffective(
-        has ? "start-plan" : "coding-plan",
-        has ? "start-plan balance available" : "start-plan balance empty or expired",
+        goStart ? "start-plan" : "coding-plan",
+        goStart
+          ? "start-plan balance available"
+          : has
+            ? "start-plan balance available but fallback cooldown active"
+            : "start-plan balance empty or expired",
       );
     },
   };
@@ -195,4 +242,9 @@ export function __resetPlanAutoStateForTests(): void {
   state.fallbackCooldownUntil = 0;
   state.lastCheckAt = 0;
   state.lastError = null;
+}
+
+/** Place the fallback cooldown at an absolute time (tests only). */
+export function __setFallbackCooldownForTests(until: number): void {
+  state.fallbackCooldownUntil = until;
 }
