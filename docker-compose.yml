@@ -17,6 +17,8 @@
 # The secret can also live in a `.env` file next to this file (gitignored):
 #   ZCODE_PROXY_CREDENTIAL_SECRET=a-secret-passphrase-only-you-know
 
+name: zcode-api
+
 services:
   zcode-proxy:
     build: .
@@ -33,4 +35,6 @@ services:
       - ./docker-data:/home/bun/.zcode-proxy
     environment:
       ZCODE_PROXY_CREDENTIAL_SECRET: ${ZCODE_PROXY_CREDENTIAL_SECRET:?set ZCODE_PROXY_CREDENTIAL_SECRET in .env or environment}
+      # Log timestamps render in this zone (the image installs tzdata).
+      TZ: "Europe/Istanbul"
     restart: unless-stopped

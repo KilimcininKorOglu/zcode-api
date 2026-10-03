@@ -14,6 +14,9 @@ COPY scripts ./scripts
 # The image runs TS sources — bundle the worker entry here (gitignored build
 # input) or the solver silently falls back to main-thread solving.
 RUN bun run scripts/build-fork-worker.ts && rm -rf scripts
+# tzdata lets the TZ env var (set by docker-compose.yml) shift the log
+# timestamps off UTC; without it musl ignores TZ and stays on UTC.
+RUN apk add --no-cache tzdata
 RUN mkdir -p /data && chown bun:bun /data
 ENV ZCODE_PROXY_PORT=8080
 ENV ZCODE_PROXY_CONFIG=/data/config.yaml
