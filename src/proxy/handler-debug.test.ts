@@ -56,7 +56,7 @@ function mockFetch(impl: (req: Request) => Promise<Response>): typeof fetch {
   return Object.assign(impl, { preconnect: () => {} }) as typeof fetch;
 }
 
-async function captureConsoleLog(fn: () => Promise<void>): Promise<string[]> {
+export async function captureConsoleLog(fn: () => Promise<void>): Promise<string[]> {
   const lines: string[] = [];
   const orig = console.log;
   console.log = (...args: unknown[]) => { lines.push(args.join(" ")); };

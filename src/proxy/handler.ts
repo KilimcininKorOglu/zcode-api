@@ -809,7 +809,7 @@ function translatedSseResponse(body: ReadableStream<Uint8Array>): Response {
   });
 }
 
-interface RequestMeta {
+export interface RequestMeta {
   model: string;
   stream: boolean;
 }
@@ -910,7 +910,7 @@ function printHeader(): void {
   );
 }
 
-function printRow(
+export function printRow(
   reqId: string,
   format: Format,
   meta: RequestMeta,
@@ -944,8 +944,10 @@ function printRow(
   }
 
   const ts = localTime(started);
-  const ttfb = `${headersAt - started}ms`;
-  const total = streamEndAt > started ? `${streamEndAt - started}ms` : "-";
+  // Human-readable durations (same format the compact log uses): ms below
+  // 1s, seconds below 1m, `NmNs` above — a 60s stream must not read "60054ms".
+  const ttfb = fmtMs(headersAt - started);
+  const total = streamEndAt > started ? fmtMs(streamEndAt - started) : "-";
   const tok = tokens > 0 ? String(tokens) : "-";
   const tps = avgTps > 0 ? avgTps.toFixed(1) : "-";
   console.log(
