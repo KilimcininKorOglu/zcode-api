@@ -1,0 +1,36 @@
+# ZCode Proxy — Docker Compose deployment.
+#
+# Persistent data lives in ./docker-data/ (a host bind mount, not a named
+# volume), so it survives `docker compose down` and is easy to back up:
+#   docker-data/config.yaml       — proxy config (auto-created on first run)
+#   docker-data/credentials.json  — encrypted OAuth credential (from `auth login`)
+# To start over, stop the stack and delete the folder.
+#
+# First-time setup:
+#   mkdir -p docker-data
+#   ZCODE_PROXY_CREDENTIAL_SECRET="a-secret-passphrase-only-you-know" \
+#     bun run src/index.ts auth login zai
+#   cp ~/.zcode-proxy/credentials.json docker-data/credentials.json
+#   ZCODE_PROXY_CREDENTIAL_SECRET="a-secret-passphrase-only-you-know" \
+#     docker compose up -d --build
+#
+# The secret can also live in a `.env` file next to this file (gitignored):
+#   ZCODE_PROXY_CREDENTIAL_SECRET=a-secret-passphrase-only-you-know
+
+services:
+  zcode-proxy:
+    build: .
+    image: zcode-proxy:latest
+    container_name: zcode-proxy
+    ports:
+      - "8080:8080"
+    volumes:
+      # One persistent folder mounted where the image expects it:
+      # /data/config.yaml (ZCODE_PROXY_CONFIG) and bun's credential store.
+      # Read-write so the panel can save plan switches and an in-container
+      # `auth login` can persist credentials.
+      - ./docker-data:/data
+      - ./docker-data:/home/bun/.zcode-proxy
+    environment:
+      ZCODE_PROXY_CREDENTIAL_SECRET: ${ZCODE_PROXY_CREDENTIAL_SECRET:?set ZCODE_PROXY_CREDENTIAL_SECRET in .env or environment}
+    restart: unless-stopped

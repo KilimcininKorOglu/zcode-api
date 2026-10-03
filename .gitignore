@@ -27,3 +27,8 @@ Android-APP/app/src/main/assets/server_bundle/server.cjs
 # scripts/build-fork-worker.ts (chained into every build:* script), never
 # committed.
 src/proxy/captcha-worker-entry.bundle.js
+
+# Docker Compose persistent data (bind mount): config + encrypted
+# credentials live here, never commit them.
+docker-data/
+.env
