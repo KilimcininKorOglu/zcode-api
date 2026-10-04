@@ -249,6 +249,7 @@ export async function proxyRequest(
       {
         isAborted: () => clientReq.signal.aborted,
         onRetry: (status) => console.log(`${reqId} upstream gateway ${status}, retrying once`),
+        onAbort: (status) => console.log(`${reqId} upstream gateway ${status}, client already gone — not retrying`),
       },
     );
   };
@@ -531,14 +532,20 @@ export const GATEWAY_RETRY_BACKOFF_MS = 1000;
  * The failed response body is cancelled to release the socket, then `send`
  * runs once more — same contract as the connect ladder: `send` must dispatch
  * a FRESH request each call. Exactly one retry, so a sustained upstream
- * outage never multiplies the client's wait.
+ * outage never multiplies the client's wait. A client that already hung up
+ * skips the retry (nobody receives it) — reported through `onAbort` so the
+ * request log distinguishes a retried failure from a skipped one.
  */
 export async function retryOnGatewayError(
   send: () => Promise<Response>,
-  opts: { isAborted?: () => boolean; onRetry?: (status: number) => void } = {},
+  opts: { isAborted?: () => boolean; onRetry?: (status: number) => void; onAbort?: (status: number) => void } = {},
 ): Promise<Response> {
   const resp = await send();
-  if (!GATEWAY_RETRY_STATUSES.has(resp.status) || opts.isAborted?.()) return resp;
+  if (!GATEWAY_RETRY_STATUSES.has(resp.status)) return resp;
+  if (opts.isAborted?.()) {
+    opts.onAbort?.(resp.status);
+    return resp;
+  }
   try {
     await resp.body?.cancel();
   } catch {

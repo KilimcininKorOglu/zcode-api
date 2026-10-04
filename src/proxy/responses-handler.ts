@@ -244,6 +244,7 @@ export async function handleResponses(
       {
         isAborted: () => clientReq.signal.aborted,
         onRetry: (status) => console.log(`[responses] upstream gateway ${status}, retrying once`),
+        onAbort: (status) => console.log(`[responses] upstream gateway ${status}, client already gone — not retrying`),
       },
     );
   };

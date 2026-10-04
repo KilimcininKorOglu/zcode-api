@@ -292,4 +292,38 @@ describe("proxyRequest — hybrid plan auto-switch fallback", () => {
     expect(calls).toHaveLength(2);
     expect(resp.status).toBe(502);
   });
+
+  it("skips the gateway retry when the client already hung up (live 2026-10-05 signature)", async () => {
+    // The two silent live 502 rows: the client disconnected while the fast
+    // LB 502 was in flight, so the retry is skipped — one upstream hit,
+    // status passed through, nothing retried for a caller that is gone.
+    const calls: RecordedCall[] = [];
+    const controller = new AbortController();
+    const fetchImpl = Object.assign(
+      (async (req: Request): Promise<Response> => {
+        calls.push({
+          url: req.url,
+          authorization: req.headers.get("authorization"),
+          apiKey: req.headers.get("x-api-key"),
+          body: await req.clone().text(),
+        });
+        // The client hangs up while the 502 is in flight: by the time the
+        // response is processed, the request signal is already aborted.
+        controller.abort();
+        return new Response("bad gateway", { status: 502 });
+      }) as typeof fetch,
+      { preconnect: () => {} },
+    ) as typeof fetch;
+    const config: ProxyConfig = { ...TEST_CONFIG, plan: "coding-plan", planAutoSwitch: false };
+    const clientReq = new Request("http://localhost:8080/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: '{"model":"glm-4.6","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}',
+      signal: controller.signal,
+    });
+    const resp = await proxyRequest(clientReq, "anthropic", { config, auth: makeAuth(), fetchImpl });
+
+    expect(calls).toHaveLength(1);
+    expect(resp.status).toBe(502);
+  });
 });
