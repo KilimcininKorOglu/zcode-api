@@ -249,7 +249,7 @@ export async function proxyRequest(
       {
         isAborted: () => clientReq.signal.aborted,
         onRetry: (status) => console.log(`${reqId} upstream gateway ${status}, retrying once`),
-        onAbort: (status) => console.log(`${reqId} upstream gateway ${status}, client already gone — not retrying`),
+        onAbort: (status) => console.log(`${reqId} upstream gateway ${status}, client already gone, not retrying`),
       },
     );
   };
@@ -303,6 +303,16 @@ export async function proxyRequest(
     );
   } catch (err) {
     if (debug) debugError(reqId, "upstream_unreachable", (err as Error).message);
+    // The ladder logs its own retry lines for ordinary connect failures; the
+    // two failures it rethrows WITHOUT any line would otherwise surface as a
+    // bare 502 row that cannot be told apart from a retried one: a postWrite
+    // transport death (the request was fully on the wire, so by design it is
+    // never resent) and a client that hung up before the first connect.
+    if ((err as { postWrite?: boolean }).postWrite) {
+      console.log(`${reqId} upstream connection lost after the request was written, not retried`);
+    } else if ((err as Error).message === CLIENT_ABORTED_BEFORE_CONNECT) {
+      console.log(`${reqId} client gone before upstream connect, not retrying`);
+    }
     printRow(reqId, format, meta, 502, started, Date.now(), 0, 0, 0);
     return errorResponse(502, "upstream_unreachable", (err as Error).message);
   }
@@ -484,6 +494,10 @@ export function capOrderedAcceptEncoding(
 /** Max attempts (initial + 2 retries) for transient CONNECT-level failures. */
 export const MAX_CONNECT_ATTEMPTS = 3;
 
+/** Error thrown when the ladder sees the client signal already aborted. A
+ * stable string so the 502 catch site can recognize it without typing. */
+export const CLIENT_ABORTED_BEFORE_CONNECT = "client aborted before upstream connect";
+
 /**
  * Connect-level retry ladder shared by the chat hot path and /v1/responses.
  * Transient connect failures (DNS blip, TLS reset, Bun "Unable to connect")
@@ -502,7 +516,7 @@ export async function dispatchWithConnectRetry(
   opts: { isAborted?: () => boolean; onRetry?: (attempt: number, err: Error) => void } = {},
 ): Promise<Response> {
   for (let attempt = 1; ; attempt++) {
-    if (opts.isAborted?.()) throw new Error("client aborted before upstream connect");
+    if (opts.isAborted?.()) throw new Error(CLIENT_ABORTED_BEFORE_CONNECT);
     try {
       return await attemptDispatch();
     } catch (err) {

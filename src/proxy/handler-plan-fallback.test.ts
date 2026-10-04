@@ -10,6 +10,7 @@ import { proxyRequest } from "./handler.js";
 import { activePlan, __resetPlanAutoStateForTests } from "../plan/auto.js";
 import type { ProxyConfig, ProxyIdentity } from "../config/types.js";
 import { AuthManager } from "../auth/manager.js";
+import { captureConsoleLog } from "./handler-debug.test.js";
 
 const IDENTITY: ProxyIdentity = {
   appVersion: "test-1.0.0",
@@ -325,5 +326,47 @@ describe("proxyRequest — hybrid plan auto-switch fallback", () => {
 
     expect(calls).toHaveLength(1);
     expect(resp.status).toBe(502);
+  });
+
+  it("logs the reason when the client hung up before the first connect", async () => {
+    // The other silent live-502 producer: the client aborted while the
+    // request was still being read/transformed, so the ladder's pre-flight
+    // abort check throws before any upstream attempt and no retry line
+    // exists. The catch site must still say why.
+    const calls: RecordedCall[] = [];
+    const config: ProxyConfig = { ...TEST_CONFIG, plan: "coding-plan", planAutoSwitch: false };
+    const abortedReq = new Request("http://localhost:8080/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: '{"model":"glm-4.6","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}',
+      signal: AbortSignal.abort(),
+    });
+    const lines = await captureConsoleLog(async () => {
+      const resp = await proxyRequest(abortedReq, "anthropic", { config, auth: makeAuth(), fetchImpl: makeFetch(calls) });
+      expect(resp.status).toBe(502);
+    });
+    expect(calls).toHaveLength(0);
+    expect(lines.some((line) => line.includes("client gone before upstream connect, not retrying"))).toBe(true);
+  });
+
+  it("logs the reason when the transport dies after the request was written", async () => {
+    // postWrite failures are never retried by design (PR #34 review): the
+    // request may have been processed. The 502 row must still carry a line.
+    const err = new Error("socket closed unexpectedly");
+    (err as { postWrite?: boolean }).postWrite = true;
+    const fetchImpl = Object.assign(
+      (async (_request: Request): Promise<Response> => {
+        throw err;
+      }) as typeof fetch,
+      { preconnect: () => {} },
+    ) as typeof fetch;
+    const calls: RecordedCall[] = [];
+    void calls;
+    const config: ProxyConfig = { ...TEST_CONFIG, plan: "coding-plan", planAutoSwitch: false };
+    const lines = await captureConsoleLog(async () => {
+      const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
+      expect(resp.status).toBe(502);
+    });
+    expect(lines.some((line) => line.includes("upstream connection lost after the request was written, not retried"))).toBe(true);
   });
 });

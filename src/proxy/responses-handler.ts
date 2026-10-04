@@ -23,7 +23,7 @@ import type { ProxyConfig } from "../config/types.js";
 import type { AuthManager } from "../auth/manager.js";
 import { buildUpstreamRequest, buildUpstreamHeaderPairs, type UpstreamHeaderPair } from "./upstream.js";
 import { isCaptchaChallenged, retryOnCaptchaChallenge } from "./captcha-retry.js";
-import { dispatchWithConnectRetry, retryOnGatewayError } from "./handler.js";
+import { CLIENT_ABORTED_BEFORE_CONNECT, dispatchWithConnectRetry, retryOnGatewayError } from "./handler.js";
 import type * as CaptchaExports from "./captcha.js";
 
 // Lazy, runtime-gated module load (exception to the static-import rule, same
@@ -244,7 +244,7 @@ export async function handleResponses(
       {
         isAborted: () => clientReq.signal.aborted,
         onRetry: (status) => console.log(`[responses] upstream gateway ${status}, retrying once`),
-        onAbort: (status) => console.log(`[responses] upstream gateway ${status}, client already gone — not retrying`),
+        onAbort: (status) => console.log(`[responses] upstream gateway ${status}, client already gone, not retrying`),
       },
     );
   };
@@ -258,6 +258,14 @@ export async function handleResponses(
       isAborted: () => clientReq.signal.aborted,
     });
   } catch (err) {
+    // Same silent-rethrow visibility as handler.ts: a postWrite transport
+    // death and a client gone before the first connect produce a bare 502
+    // otherwise.
+    if ((err as { postWrite?: boolean }).postWrite) {
+      console.log(`[responses] upstream connection lost after the request was written, not retried`);
+    } else if ((err as Error).message === CLIENT_ABORTED_BEFORE_CONNECT) {
+      console.log(`[responses] client gone before upstream connect, not retrying`);
+    }
     return errorResponse(502, "upstream_unreachable", (err as Error).message);
   }
 
