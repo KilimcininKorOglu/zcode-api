@@ -45,7 +45,8 @@ import { translateRequestAnthropicToOpenAI, translateResponseOpenAIToAnthropic }
 import { anthropicSseToOpenaiSse, openaiSseToAnthropicSse } from "../translator/sse-translator.js";
 import type { OpenAIChatRequest, OpenAIChatResponse, AnthropicMessagesRequest, AnthropicMessagesResponse } from "../translator/types.js";
 import { dumpPhase, dumpHeaders, dumpBody, dumpEnabled } from "./dump.js";
-import { inflateWithCap } from "./inflate.js";
+import { clientAcceptsCoding, inflateFormatFor, inflateStreamForCodings, inflateWithCap } from "./inflate.js";
+import { probeFetchDecompressBehavior } from "./decompress-probe.js";
 import { buildAnthropicMetadataUserId } from "./trace-headers.js";
 
 /** Options for the proxy handler. */
@@ -443,11 +444,11 @@ export async function proxyRequest(
   if (isSSE && upstreamResp.body) {
     const [clientBody, statsBody] = upstreamResp.body.tee();
     observeStream(reqId, format, meta, upstreamResp.status, started, statsBody, upstreamResp.headers.get("content-encoding"));
-    return passthroughResponse(upstreamResp, clientAcceptsGzip(clientReq), clientBody);
+    return passthroughResponse(upstreamResp, clientReq.headers.get("accept-encoding"), clientBody);
   }
 
   printRow(reqId, format, meta, upstreamResp.status, started, headersAt, 0, 0, 0);
-  return passthroughResponse(upstreamResp, clientAcceptsGzip(clientReq));
+  return passthroughResponse(upstreamResp, clientReq.headers.get("accept-encoding"));
 }
 
 export function shouldUseOrderedTransport(config: ProxyConfig, clientSession: ClientSessionResult | undefined, hasCustomFetchImpl: boolean): boolean {
@@ -549,32 +550,55 @@ export async function retryOnGatewayError(
 }
 
 /**
- * True on runtimes whose fetch ignores Bun's `decompress: false` extension and
- * transparently inflates compressed response bodies while KEEPING the
- * `content-encoding`/`content-length` headers (verified empirically against
- * Node 22/26 undici and Bun 1.3: gzip, deflate and br are all decoded, headers
- * unchanged). Bun honors `decompress: false` (raw bytes + truthful header), so
- * no normalization is needed there.
+ * Codings a runtime is ASSUMED to auto-decode, used only when the probe in
+ * decompress-probe.ts fails (legacy behavior from the days of the hardcoded
+ * `typeof Bun === "undefined"` sniff — verified empirically against Node
+ * 22/26 undici and Bun 1.3 back then). The real answer is measured.
  */
-const FETCH_AUTO_DECOMPRESSES = typeof Bun === "undefined";
+const ASSUMED_AUTO_DECODED_ENCODINGS: ReadonlySet<string> = new Set(["gzip", "x-gzip", "deflate", "br"]);
 
-/** Content codings a `FETCH_AUTO_DECOMPRESSES` runtime inflates transparently. */
-const AUTO_DECODED_ENCODINGS = new Set(["gzip", "x-gzip", "deflate", "br"]);
+interface FetchDecompressBehavior {
+  /** Codings this runtime's fetch inflates even when asked not to (undici). */
+  autoDecoded: ReadonlySet<string>;
+}
+
+let measuredBehavior: Promise<FetchDecompressBehavior> | null = null;
+
+/**
+ * Measured-once decompress behavior of THIS runtime's fetch (see
+ * decompress-probe.ts). Falls back to the Node-like assumption with a warning
+ * when the probe fails — the stale labels are then still stripped for the
+ * known codings, never wrongly kept silent.
+ */
+function getFetchDecompressBehavior(): Promise<FetchDecompressBehavior> {
+  if (!measuredBehavior) {
+    measuredBehavior = probeFetchDecompressBehavior().then(
+      (autoDecoded) => ({ autoDecoded }),
+      (err: unknown) => {
+        console.log(`[proxy] decompress probe failed (${(err as Error).message}); assuming auto-decode of ${[...ASSUMED_AUTO_DECODED_ENCODINGS].join(", ")}`);
+        return { autoDecoded: ASSUMED_AUTO_DECODED_ENCODINGS };
+      },
+    );
+  }
+  return measuredBehavior;
+}
 
 /**
  * Strip `content-encoding`/`content-length` from a Response whose body the
- * runtime fetch has ALREADY inflated. Without this, passthrough on Node would
- * forward a decoded body still labeled `content-encoding: gzip` — clients that
- * advertise gzip then fail to decompress it, and the `passthroughResponse`
- * safety net would double-decompress an already-inflated stream for clients
- * that don't. No-op for encodings the runtime leaves untouched. Returns a new
+ * runtime fetch has ALREADY inflated (the measured `autoDecoded` set). Without
+ * this, passthrough on an auto-decoding runtime would forward a decoded body
+ * still labeled `content-encoding: gzip` — clients that advertise gzip then
+ * fail to decompress it, and the `passthroughResponse` safety net would
+ * double-decompress an already-inflated stream for clients that don't. No-op
+ * for encodings outside the set — an unknown coding keeps its truthful
+ * (possibly stale-looking) header rather than a guessed one. Returns a new
  * Response because a fetch Response's headers can be immutable.
  */
-export function stripAutoDecodedEncoding(resp: Response): Response {
+export function stripAutoDecodedEncoding(resp: Response, autoDecoded: ReadonlySet<string> = ASSUMED_AUTO_DECODED_ENCODINGS): Response {
   const encoding = resp.headers.get("content-encoding")?.toLowerCase().trim() ?? "";
   if (!encoding) return resp;
   const codings = encoding.split(",").map((c) => c.trim());
-  if (!codings.every((c) => AUTO_DECODED_ENCODINGS.has(c))) return resp;
+  if (!codings.every((c) => autoDecoded.has(c))) return resp;
   const headers = new Headers(resp.headers);
   headers.delete("content-encoding");
   headers.delete("content-length");
@@ -608,33 +632,39 @@ async function sendUpstreamRequest(
   const fetchOpts: RequestInit & { decompress?: boolean } = translateMode ? {} : { decompress: false };
   if (abortSignal) fetchOpts.signal = abortSignal;
   const resp = await fetchImpl(upstreamReq, fetchOpts);
-  // Passthrough on a runtime whose fetch auto-decompresses (Node/undici in the
-  // Android bundle): the body arrives inflated while its headers still claim
-  // compression. Drop the stale labels so the body/header pairing downstream
-  // stays truthful. Skipped for injected fetch impls (tests) — their bodies are
+  // Passthrough on a runtime whose fetch auto-decompresses (measured once at
+  // first use by decompress-probe.ts: undici in the Android bundle decodes
+  // gzip/deflate/br and keeps the stale labels, Bun's decompress:false does
+  // not): the body arrives inflated while its headers still claim compression.
+  // Drop the stale labels so the body/header pairing downstream stays
+  // truthful. Skipped for injected fetch impls (tests) — their bodies are
   // genuinely compressed and their decompression semantics are their own.
-  if (!translateMode && FETCH_AUTO_DECOMPRESSES && !hasCustomFetchImpl) {
-    return stripAutoDecodedEncoding(resp);
+  if (!translateMode && !hasCustomFetchImpl) {
+    const { autoDecoded } = await getFetchDecompressBehavior();
+    return stripAutoDecodedEncoding(resp, autoDecoded);
   }
   return resp;
 }
 
 /**
  * Read the request body as a string, returning undefined for empty bodies.
- * Transparently inflates `content-encoding: gzip` request bodies (the OpenAI /
- * Anthropic upstreams accept gzipped request bodies; without this, clients
- * that send them got a misleading "body is not valid JSON" 400). Corrupt gzip
- * throws a descriptive Error; inflation past `MAX_INFLATED_BODY_BYTES` throws
- * `InflatedBodyTooLargeError` (streamed + aborted early, so a small wire
- * payload cannot expand into unbounded proxy memory).
+ * Transparently inflates compressed request bodies — every coding in
+ * `content-encoding` that this runtime can inflate (gzip/x-gzip/deflate/br;
+ * `deflate` retries once as raw-deflate for the classic ambiguous clients).
+ * Without this, clients that send compressed bodies got a misleading
+ * "body is not valid JSON" 400 instead of an encoding diagnosis. Corrupt data
+ * throws a descriptive Error naming the codings; inflation past
+ * `MAX_INFLATED_BODY_BYTES` throws `InflatedBodyTooLargeError` (streamed +
+ * aborted early, so a small wire payload cannot expand into unbounded proxy
+ * memory).
  */
 export async function readBody(req: Request): Promise<string | undefined> {
   if (req.method === "GET" || req.method === "HEAD") return undefined;
   const bytes = new Uint8Array(await req.arrayBuffer());
   if (bytes.byteLength === 0) return undefined;
-  const encoding = req.headers.get("content-encoding")?.toLowerCase().trim() ?? "";
-  if (encoding === "gzip" || encoding === "x-gzip") {
-    return new TextDecoder().decode(await inflateGzipBody(bytes));
+  const codings = req.headers.get("content-encoding")?.toLowerCase().split(",").map((c) => c.trim()).filter((c) => c !== "" && c !== "identity") ?? [];
+  if (codings.length > 0) {
+    return new TextDecoder().decode(await inflateRequestBody(bytes, codings));
   }
   return new TextDecoder().decode(bytes);
 }
@@ -646,41 +676,63 @@ export async function readBody(req: Request): Promise<string | undefined> {
  */
 const MAX_INFLATED_BODY_BYTES = 64 * 1024 * 1024;
 
-/** Thrown when a gzip request body expands past MAX_INFLATED_BODY_BYTES. */
+/** Thrown when a compressed request body expands past MAX_INFLATED_BODY_BYTES. */
 export class InflatedBodyTooLargeError extends Error {
   constructor(limit: number) {
-    super(`gzip request body exceeds ${limit} bytes after decompression`);
+    super(`request body exceeds ${limit} bytes after decompression`);
     this.name = "InflatedBodyTooLargeError";
   }
 }
 
-async function inflateGzipBody(bytes: Uint8Array): Promise<Uint8Array> {
-  const result = await inflateWithCap(bytes, MAX_INFLATED_BODY_BYTES);
-  if (!result.ok) {
-    if (result.reason === "too_large") throw new InflatedBodyTooLargeError(MAX_INFLATED_BODY_BYTES);
-    throw new Error(`request body is marked content-encoding: gzip but failed to decompress: ${result.detail}`);
+/**
+ * Inflates a compressed request body through every coding in the
+ * content-encoding list (outermost last). Unknown to this runtime → a
+ * descriptive 400 source error naming the coding; corrupt data → an error
+ * naming the codings (`deflate` retries once as raw-deflate first — some
+ * clients label raw-deflate bodies as `deflate`).
+ */
+async function inflateRequestBody(bytes: Uint8Array, codings: string[]): Promise<Uint8Array> {
+  let current = bytes;
+  for (let i = codings.length - 1; i >= 0; i--) {
+    const coding = codings[i];
+    const format = inflateFormatFor(coding);
+    if (format === null) {
+      throw new Error(`request body is marked content-encoding: ${coding} but this runtime cannot inflate it`);
+    }
+    let result = await inflateWithCap(current, MAX_INFLATED_BODY_BYTES, format);
+    if (!result.ok && result.reason === "corrupt" && format === "deflate") {
+      result = await inflateWithCap(current, MAX_INFLATED_BODY_BYTES, "deflate-raw");
+    }
+    if (!result.ok) {
+      if (result.reason === "too_large") throw new InflatedBodyTooLargeError(MAX_INFLATED_BODY_BYTES);
+      throw new Error(`request body is marked content-encoding: ${codings.join(", ")} but failed to decompress as ${coding}: ${result.detail}`);
+    }
+    current = result.bytes;
   }
-  return result.bytes;
+  return current;
 }
 
 /**
  * Create a passthrough response that streams the upstream body to the client.
  * Preserves status and the allowlisted headers, and honors the client's
- * `Accept-Encoding` for gzip.
+ * `Accept-Encoding`.
  *
  * The upstream request FORWARDS the client's `accept-encoding` (only
  * defaulting to "gzip" when the client sent none — see
  * `buildUpstreamHeaderPairs`), so the upstream compresses only when the
- * client can decode it. If THIS client did not advertise gzip but the body
- * arrived gzip-compressed anyway, we decompress before forwarding and drop
- * the now-mismatched `content-encoding`/`content-length` headers — otherwise
- * clients whose HTTP stack does not auto-decompress (e.g. some Tauri-based
- * clients) receive raw gzip bytes and fail to parse the JSON body with
- * "non-JSON body" errors despite a 200 status.
+ * client can decode it. Safety net for upstreams that compress anyway: when
+ * the client cannot decode some coding in the response's `content-encoding`
+ * list and this runtime can inflate the whole list, inflate before forwarding
+ * and drop the now-mismatched `content-encoding`/`content-length` headers —
+ * otherwise clients whose HTTP stack does not auto-decompress (e.g. some
+ * Tauri-based clients) receive raw compressed bytes and fail to parse the
+ * JSON body with "non-JSON body" errors despite a 200 status. When the list
+ * cannot be inflated here, forward raw with the truthful header: a visible
+ * decode error beats a silent body/header lie.
  */
 function passthroughResponse(
   upstream: Response,
-  clientAcceptsGzip: boolean,
+  clientAcceptEncoding: string | null,
   body?: ReadableStream<Uint8Array>,
 ): Response {
   const headers = new Headers();
@@ -702,18 +754,20 @@ function passthroughResponse(
     if (v) headers.set(h, v);
   }
 
-  const upstreamEncoding = headers.get("content-encoding")?.toLowerCase() ?? "";
+  const codings = headers.get("content-encoding")?.toLowerCase().split(",").map((c) => c.trim()).filter((c) => c !== "" && c !== "identity") ?? [];
   const source = body ?? upstream.body;
-  if (upstreamEncoding.includes("gzip") && !clientAcceptsGzip && source) {
-    const gunzip = new DecompressionStream("gzip") as unknown as ReadableWritablePair<Uint8Array, Uint8Array>;
-    const decompressed = source.pipeThrough(gunzip);
-    headers.delete("content-encoding");
-    headers.delete("content-length");
-    return new Response(decompressed, {
-      status: upstream.status,
-      statusText: upstream.statusText,
-      headers,
-    });
+  const clientDecodesAll = codings.every((coding) => clientAcceptsCoding(clientAcceptEncoding, coding));
+  if (codings.length > 0 && !clientDecodesAll && source) {
+    const inflated = inflateStreamForCodings(source, codings);
+    if (inflated) {
+      headers.delete("content-encoding");
+      headers.delete("content-length");
+      return new Response(inflated, {
+        status: upstream.status,
+        statusText: upstream.statusText,
+        headers,
+      });
+    }
   }
 
   return new Response(source, {
@@ -755,9 +809,7 @@ function translateOpenAIBody(body: string | undefined): Response | string | unde
 
 /** True when the client request explicitly accepts gzip (and has not disabled it via q=0). */
 function clientAcceptsGzip(req: Request): boolean {
-  const ae = req.headers.get("accept-encoding");
-  if (!ae) return false;
-  return /\bgzip\b(?!\s*;\s*q=0(?:\.0+)?\s*(?:,|$))/i.test(ae);
+  return clientAcceptsCoding(req.headers.get("accept-encoding"), "gzip");
 }
 
 /** Build a translated batch (non-streaming) OpenAI response. Gzip if client accepts. */
