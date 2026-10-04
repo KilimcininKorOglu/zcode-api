@@ -23,7 +23,7 @@ import type { ProxyConfig } from "../config/types.js";
 import type { AuthManager } from "../auth/manager.js";
 import { buildUpstreamRequest, buildUpstreamHeaderPairs, type UpstreamHeaderPair } from "./upstream.js";
 import { isCaptchaChallenged, retryOnCaptchaChallenge } from "./captcha-retry.js";
-import { dispatchWithConnectRetry } from "./handler.js";
+import { dispatchWithConnectRetry, retryOnGatewayError } from "./handler.js";
 import type * as CaptchaExports from "./captcha.js";
 
 // Lazy, runtime-gated module load (exception to the static-import rule, same
@@ -221,22 +221,31 @@ export async function handleResponses(
     const sendUrl = routed?.routed ? routed.url : upstreamReq.url;
     if (debug && routed?.routed) console.log(`[responses] endpoint routing: ${upstreamReq.url} -> ${sendUrl}`);
     // signing decisions run against the PRE-routing provider URL (mirrors the
-    // client, whose signer wraps the routing transport)
-    return sendWithClientSigning(signer, {
-      url: upstreamReq.url,
-      headerPairs: pairs,
-      credential: credentialString(cred),
-      appVersion: opts.config.identity.appVersion,
-      debug: debug ? (message) => console.log(`[responses] ${message}`) : undefined,
-      send: (finalPairs) => {
-        const req = new Request(sendUrl, {
-          method: "POST",
-          headers: Object.fromEntries(finalPairs),
-          body: transformedBody ?? undefined,
-        });
-        return fetchImpl(req, { method: "POST", headers: Object.fromEntries(finalPairs), body: transformedBody ?? undefined, signal: clientReq.signal });
+    // client, whose signer wraps the routing transport). A gateway 502/504 is
+    // a complete LB answer, not a connect error; retry it once here so every
+    // dispatch (initial, plan fallback, captcha retry) gets a second chance.
+    return retryOnGatewayError(
+      () =>
+        sendWithClientSigning(signer, {
+          url: upstreamReq.url,
+          headerPairs: pairs,
+          credential: credentialString(cred),
+          appVersion: opts.config.identity.appVersion,
+          debug: debug ? (message) => console.log(`[responses] ${message}`) : undefined,
+          send: (finalPairs) => {
+            const req = new Request(sendUrl, {
+              method: "POST",
+              headers: Object.fromEntries(finalPairs),
+              body: transformedBody ?? undefined,
+            });
+            return fetchImpl(req, { method: "POST", headers: Object.fromEntries(finalPairs), body: transformedBody ?? undefined, signal: clientReq.signal });
+          },
+        }),
+      {
+        isAborted: () => clientReq.signal.aborted,
+        onRetry: (status) => console.log(`[responses] upstream gateway ${status}, retrying once`),
       },
-    });
+    );
   };
 
   let upstreamResp: Response;

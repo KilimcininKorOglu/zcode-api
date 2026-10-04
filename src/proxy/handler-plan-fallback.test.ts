@@ -205,4 +205,91 @@ describe("proxyRequest — hybrid plan auto-switch fallback", () => {
     expect(resp.status).toBe(402);
     expect(activePlan(config)).toBe("start-plan");
   });
+
+  it("falls back to the coding plan when the start-plan gateway 504s (live outage shape)", async () => {
+    // 2026-10-04 outage: the start-plan gateway answered every request with
+    // LB 504@60s/502@30s for ~10 minutes; the plan fallback only knew
+    // 401/402/403, so the client ate every failure.
+    const calls: RecordedCall[] = [];
+    const fetchImpl = Object.assign(
+      (async (req: Request): Promise<Response> => {
+        calls.push({
+          url: req.url,
+          authorization: req.headers.get("authorization"),
+          apiKey: req.headers.get("x-api-key"),
+          body: await req.clone().text(),
+        });
+        if (req.url.includes("/api/v1/zcode-plan/")) {
+          return new Response("gateway timeout", { status: 504 });
+        }
+        return new Response(ANTHROPIC_OK, { status: 200, headers: { "content-type": "application/json" } });
+      }) as typeof fetch,
+      { preconnect: () => {} },
+    ) as typeof fetch;
+    const config: ProxyConfig = { ...TEST_CONFIG, planAutoSwitch: true };
+    const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
+
+    // Two start-plan attempts (dispatch-level gateway retry) + the coding retry.
+    expect(calls).toHaveLength(3);
+    expect(calls[0].url).toContain("/api/v1/zcode-plan/");
+    expect(calls[1].url).toContain("/api/v1/zcode-plan/");
+    expect(calls[2].url).toContain("https://api.z.ai/api/anthropic");
+    expect(calls[2].apiKey).toBe("key-mock");
+    expect(resp.status).toBe(200);
+    expect(activePlan(config)).toBe("coding-plan");
+  });
+
+  it("retries a coding-plan gateway 502 once before surfacing it", async () => {
+    // The dispatch-level gateway retry is independent of planAutoSwitch: a
+    // coding-plan LB blip (502@30s rows in the live logs) gets one clean
+    // resend, and only a repeated failure reaches the client.
+    let call = 0;
+    const calls: RecordedCall[] = [];
+    const fetchImpl = Object.assign(
+      (async (req: Request): Promise<Response> => {
+        calls.push({
+          url: req.url,
+          authorization: req.headers.get("authorization"),
+          apiKey: req.headers.get("x-api-key"),
+          body: await req.clone().text(),
+        });
+        call += 1;
+        if (call === 1) return new Response("bad gateway", { status: 502 });
+        return new Response(ANTHROPIC_OK, { status: 200, headers: { "content-type": "application/json" } });
+      }) as typeof fetch,
+      { preconnect: () => {} },
+    ) as typeof fetch;
+    const config: ProxyConfig = { ...TEST_CONFIG, plan: "coding-plan", planAutoSwitch: false };
+    const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0].url).toContain("https://api.z.ai/api/anthropic");
+    expect(calls[1].url).toContain("https://api.z.ai/api/anthropic");
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as { id?: string };
+    expect(body.id).toBe("msg_1");
+  });
+
+  it("passes a repeated gateway 502 through after the single retry", async () => {
+    // A sustained outage must not multiply the client's wait: exactly one
+    // retry, then the upstream failure passes through untouched.
+    const calls: RecordedCall[] = [];
+    const fetchImpl = Object.assign(
+      (async (req: Request): Promise<Response> => {
+        calls.push({
+          url: req.url,
+          authorization: req.headers.get("authorization"),
+          apiKey: req.headers.get("x-api-key"),
+          body: await req.clone().text(),
+        });
+        return new Response("bad gateway", { status: 502 });
+      }) as typeof fetch,
+      { preconnect: () => {} },
+    ) as typeof fetch;
+    const config: ProxyConfig = { ...TEST_CONFIG, plan: "coding-plan", planAutoSwitch: false };
+    const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
+
+    expect(calls).toHaveLength(2);
+    expect(resp.status).toBe(502);
+  });
 });

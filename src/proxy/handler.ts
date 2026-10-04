@@ -211,35 +211,45 @@ export async function proxyRequest(
     }
     // Signing decisions (exempt-path, handshake origin, bypass keying) run
     // against the PRE-routing provider URL — the client's signer wraps the
-    // routing transport, so its checks see the original URL too.
-    return sendWithClientSigning(signer, {
-      url: req.url,
-      headerPairs: pairs,
-      credential: credentialString(cred),
-      appVersion: config.identity.appVersion,
-      debug: debug ? (message) => debugLine(reqId, message) : undefined,
-      send: (finalPairs) => {
-        if (dumpEnabled()) {
-          // The pre-built `upstream_out` line shows the pre-routing URL and
-          // pre-signing header set; this line captures what actually went on
-          // the wire (routed URL + signed pairs) — the two diverge silently
-          // otherwise and misled a 2026-09-18 debugging session.
-          dumpPhase(reqId, "wire_out", {
-            url: sendUrl,
-            signed: finalPairs.some(([k]) => k.toLowerCase() === "x-client-sig"),
-            headers: dumpHeaders(new Headers(Object.fromEntries(finalPairs))),
-          });
-        }
-        const sendReq = sendUrl === req.url && finalPairs === pairs
-          ? req
-          : new Request(sendUrl, {
+    // routing transport, so its checks see the original URL too. A gateway
+    // 502/504 is a complete LB answer, not a connect error; retry it once
+    // here so EVERY dispatch (initial, plan fallback, captcha retry) gets
+    // the same second chance.
+    return retryOnGatewayError(
+      () =>
+        sendWithClientSigning(signer, {
+          url: req.url,
+          headerPairs: pairs,
+          credential: credentialString(cred),
+          appVersion: config.identity.appVersion,
+          debug: debug ? (message) => debugLine(reqId, message) : undefined,
+          send: (finalPairs) => {
+            if (dumpEnabled()) {
+              // The pre-built `upstream_out` line shows the pre-routing URL and
+              // pre-signing header set; this line captures what actually went on
+              // the wire (routed URL + signed pairs) — the two diverge silently
+              // otherwise and misled a 2026-09-18 debugging session.
+              dumpPhase(reqId, "wire_out", {
+                url: sendUrl,
+                signed: finalPairs.some(([k]) => k.toLowerCase() === "x-client-sig"),
+                headers: dumpHeaders(new Headers(Object.fromEntries(finalPairs))),
+              });
+            }
+            // Always a FRESH Request: a reused one has its body stream marked
+            // used after the first fetch, which would break the gateway retry.
+            const sendReq = new Request(sendUrl, {
               method: req.method,
               headers: Object.fromEntries(finalPairs),
               body: transformedBody ?? undefined,
             });
-        return sendUpstreamRequest(sendReq, finalPairs, transformedBody, translateMode, useOrderedTransport, fetchImpl, clientReq.signal, hasCustomFetchImpl);
+            return sendUpstreamRequest(sendReq, finalPairs, transformedBody, translateMode, useOrderedTransport, fetchImpl, clientReq.signal, hasCustomFetchImpl);
+          },
+        }),
+      {
+        isAborted: () => clientReq.signal.aborted,
+        onRetry: (status) => console.log(`${reqId} upstream gateway ${status}, retrying once`),
       },
-    });
+    );
   };
 
   if (debug) {
@@ -501,6 +511,41 @@ export async function dispatchWithConnectRetry(
       await new Promise((r) => setTimeout(r, backoffMs));
     }
   }
+}
+
+/** Gateway-produced statuses the upstream answered COMPLETELY (LB timeout or
+ * dead backend behind a live load balancer). The model backend produced no
+ * output for these, so a single clean resend is side-effect-free in practice. */
+export const GATEWAY_RETRY_STATUSES = new Set([502, 504]);
+
+/** Pause before the single gateway-error retry. */
+export const GATEWAY_RETRY_BACKOFF_MS = 1000;
+
+/**
+ * Single retry for a COMPLETE upstream response carrying a gateway failure
+ * status (502/504). Complements `dispatchWithConnectRetry`, which only covers
+ * thrown connect errors: an LB 502/504 arrives as a normal Response after
+ * 30-180s of gateway-side waiting (observed live 2026-10-04 as batch 502@30s
+ * and 504@60s rows) and previously passed straight through to the client.
+ * The failed response body is cancelled to release the socket, then `send`
+ * runs once more — same contract as the connect ladder: `send` must dispatch
+ * a FRESH request each call. Exactly one retry, so a sustained upstream
+ * outage never multiplies the client's wait.
+ */
+export async function retryOnGatewayError(
+  send: () => Promise<Response>,
+  opts: { isAborted?: () => boolean; onRetry?: (status: number) => void } = {},
+): Promise<Response> {
+  const resp = await send();
+  if (!GATEWAY_RETRY_STATUSES.has(resp.status) || opts.isAborted?.()) return resp;
+  try {
+    await resp.body?.cancel();
+  } catch {
+    // body already closed — nothing to release
+  }
+  opts.onRetry?.(resp.status);
+  await new Promise((r) => setTimeout(r, GATEWAY_RETRY_BACKOFF_MS));
+  return send();
 }
 
 /**

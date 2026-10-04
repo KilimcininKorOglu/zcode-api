@@ -80,6 +80,22 @@ describe("handleResponses", () => {
     expect(JSON.parse(sent).messages[0].content).toContainEqual(expect.objectContaining({ type: "text", text: "easy question" }));
   });
 
+  it("retries a gateway 502 once and serves the retry response", async () => {
+    let calls = 0;
+    const response = await handleResponses(makeReq({ model: "glm-5.2", input: "easy question" }), {
+      config: CONFIG, auth, endpointRouting: null, clientSigning: null,
+      fetchImpl: (async (_request: Request) => {
+        calls += 1;
+        if (calls === 1) return new Response("bad gateway", { status: 502 });
+        return new Response(anthropicMsg("answer"));
+      }) as typeof fetch,
+    });
+    expect(calls).toBe(2);
+    expect(response.status).toBe(200);
+    const body = JSON.parse(await response.text());
+    expect(body.output).toBeDefined();
+  });
+
   it.each([false, true])("surfaces Anthropic errors without completing or storing the response (partial=%s)", async (partial) => {
     const store = new ResponseStore({ maxEntries: 10, ttlMs: 60000 });
     const prefix = partial ? anthropicSse("partial").split("event: message_delta")[0] : "";

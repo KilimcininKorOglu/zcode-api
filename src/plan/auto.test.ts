@@ -87,6 +87,18 @@ describe("shouldFallbackPlan", () => {
     expect(shouldFallbackPlan(500, "start-plan", cfg)).toBe(false);
     expect(shouldFallbackPlan(402, "coding-plan", cfg)).toBe(false);
   });
+
+  it("falls back when the start-plan gateway itself is failing (502/504)", () => {
+    const cfg = makeConfig();
+    expect(shouldFallbackPlan(502, "start-plan", cfg)).toBe(true);
+    expect(shouldFallbackPlan(504, "start-plan", cfg)).toBe(true);
+    // Other 5xx and rate limits are load signals, not plan failures; and the
+    // coding plan has no further fallback target.
+    expect(shouldFallbackPlan(503, "start-plan", cfg)).toBe(false);
+    expect(shouldFallbackPlan(500, "coding-plan", cfg)).toBe(false);
+    expect(shouldFallbackPlan(502, "coding-plan", cfg)).toBe(false);
+    expect(shouldFallbackPlan(504, "coding-plan", cfg)).toBe(false);
+  });
 });
 
 describe("notePlanFallback", () => {
