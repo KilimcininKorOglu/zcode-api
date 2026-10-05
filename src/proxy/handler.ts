@@ -1179,12 +1179,13 @@ function printHeader(): void {
   if (headerPrinted) return;
   headerPrinted = true;
   if (COMPACT_LOG) return;
-  // First column matches REQ_ID_WIDTH (a boot-scoped id like `741f-#001`).
+  // First column matches REQ_ID_WIDTH (a boot-scoped id like `741f-#001`),
+  // the Model column the longest known model name (`glm-5.3-flash`, 13).
   console.log(
-    "| #         | Time       | Fmt | Plan        | Model       | Mode   | Stat |    TTFB |   Tok |  tok/s |   Total |",
+    "| #         | Time       | Fmt | Plan        | Model         | Mode   | Stat |    TTFB |   Tok |  tok/s |   Total |",
   );
   console.log(
-    "|-----------|------------|-----|-------------|-------------|--------|------|---------|-------|--------|---------|",
+    "|-----------|------------|-----|-------------|---------------|--------|------|---------|-------|--------|---------|",
   );
 }
 
@@ -1230,7 +1231,7 @@ export function printRow(
   const tok = tokens > 0 ? String(tokens) : "-";
   const tps = avgTps > 0 ? avgTps.toFixed(1) : "-";
   console.log(
-    `| ${reqId.padEnd(REQ_ID_WIDTH)} | ${ts.padEnd(10)} | ${tag} | ${(meta.plan ?? "-").padEnd(11)} | ${meta.model.padEnd(11)} | ${mode.padEnd(6)} | ${String(status).padStart(4)} | ${ttfb.padStart(7)} | ${tok.padStart(5)} | ${tps.padStart(6)} | ${total.padStart(7)} |`,
+    `| ${reqId.padEnd(REQ_ID_WIDTH)} | ${ts.padEnd(10)} | ${tag} | ${(meta.plan ?? "-").padEnd(11)} | ${meta.model.padEnd(13)} | ${mode.padEnd(6)} | ${String(status).padStart(4)} | ${ttfb.padStart(7)} | ${tok.padStart(5)} | ${tps.padStart(6)} | ${total.padStart(7)} |`,
   );
 }
 
