@@ -6,11 +6,15 @@
  * With the flag off, the upstream status passes through untouched.
  */
 import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { proxyRequest } from "./handler.js";
 import { activePlan, __resetPlanAutoStateForTests } from "../plan/auto.js";
 import type { ProxyConfig, ProxyIdentity } from "../config/types.js";
 import { AuthManager } from "../auth/manager.js";
 import { captureConsoleLog } from "./handler-debug.test.js";
+import { __resetErrorLogForTests } from "./error-log.js";
 
 const IDENTITY: ProxyIdentity = {
   appVersion: "test-1.0.0",
@@ -368,5 +372,41 @@ describe("proxyRequest — hybrid plan auto-switch fallback", () => {
       expect(resp.status).toBe(502);
     });
     expect(lines.some((line) => line.includes("upstream connection lost after the request was written, not retried"))).toBe(true);
+  });
+
+  it("records gateway failures in the persistent error log", async () => {
+    // The operator-facing errors.log (next to the config file) must carry the
+    // failure reason AND the request-level row for every client-visible 502.
+    const logDir = mkdtempSync(join(tmpdir(), "errlog-handler-"));
+    const logPath = join(logDir, "errors.log");
+    process.env.ZCODE_ERROR_LOG = logPath;
+    __resetErrorLogForTests();
+    try {
+      const calls: RecordedCall[] = [];
+      const fetchImpl = Object.assign(
+        (async (req: Request): Promise<Response> => {
+          calls.push({
+            url: req.url,
+            authorization: req.headers.get("authorization"),
+            apiKey: req.headers.get("x-api-key"),
+            body: await req.clone().text(),
+          });
+          return new Response("bad gateway", { status: 502 });
+        }) as typeof fetch,
+        { preconnect: () => {} },
+      ) as typeof fetch;
+      const config: ProxyConfig = { ...TEST_CONFIG, plan: "coding-plan", planAutoSwitch: false };
+      const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
+      expect(resp.status).toBe(502);
+
+      const entries = readFileSync(logPath, "utf-8").trim().split("\n").map((l) => JSON.parse(l) as { kind: string; status?: number; reqId?: string });
+      expect(entries.some((e) => e.kind === "upstream_gateway_retry" && e.status === 502)).toBe(true);
+      expect(entries.some((e) => e.kind === "request_error" && e.status === 502 && e.reqId)).toBe(true);
+      expect(calls).toHaveLength(2);
+    } finally {
+      delete process.env.ZCODE_ERROR_LOG;
+      __resetErrorLogForTests();
+      rmSync(logDir, { recursive: true, force: true });
+    }
   });
 });

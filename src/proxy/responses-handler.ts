@@ -25,6 +25,7 @@ import { buildUpstreamRequest, buildUpstreamHeaderPairs, type UpstreamHeaderPair
 import { isCaptchaChallenged, retryOnCaptchaChallenge } from "./captcha-retry.js";
 import { CLIENT_ABORTED_BEFORE_CONNECT, dispatchWithConnectRetry, retryOnGatewayError, withStreamEnabled, isEventStream, upstreamCodings } from "./handler.js";
 import { collectAnthropicMessage } from "./sse-collector.js";
+import { appendErrorLog } from "./error-log.js";
 import type * as CaptchaExports from "./captcha.js";
 
 // Lazy, runtime-gated module load (exception to the static-import rule, same
@@ -249,8 +250,14 @@ export async function handleResponses(
         }),
       {
         isAborted: () => clientReq.signal.aborted,
-        onRetry: (status) => console.log(`[responses] upstream gateway ${status}, retrying once`),
-        onAbort: (status) => console.log(`[responses] upstream gateway ${status}, client already gone, not retrying`),
+        onRetry: (status) => {
+          console.log(`[responses] upstream gateway ${status}, retrying once`);
+          appendErrorLog({ kind: "upstream_gateway_retry", reqId: "[responses]", status });
+        },
+        onAbort: (status) => {
+          console.log(`[responses] upstream gateway ${status}, client already gone, not retrying`);
+          appendErrorLog({ kind: "upstream_gateway_skip_client_gone", reqId: "[responses]", status });
+        },
       },
     );
   };
@@ -269,8 +276,10 @@ export async function handleResponses(
     // otherwise.
     if ((err as { postWrite?: boolean }).postWrite) {
       console.log(`[responses] upstream connection lost after the request was written, not retried`);
+      appendErrorLog({ kind: "upstream_postwrite_failure", reqId: "[responses]", error: (err as Error).message });
     } else if ((err as Error).message === CLIENT_ABORTED_BEFORE_CONNECT) {
       console.log(`[responses] client gone before upstream connect, not retrying`);
+      appendErrorLog({ kind: "client_gone_before_connect", reqId: "[responses]" });
     }
     return errorResponse(502, "upstream_unreachable", (err as Error).message);
   }
@@ -292,7 +301,10 @@ export async function handleResponses(
       rejected: planRejected,
       plan,
       config: opts.config,
-      onFallback: (message) => console.log(`[responses] ${message}`),
+      onFallback: (message) => {
+        console.log(`[responses] ${message}`);
+        appendErrorLog({ kind: "plan_fallback", reqId: "[responses]", message });
+      },
       rebuildAndDispatch: () => {
         transformedBody = transformRequestBody(anthropicJson, {
           format: "anthropic",
@@ -360,6 +372,7 @@ export async function handleResponses(
         try {
           parsedAnthropic = await collectAnthropicMessage(upstreamResp.body, upstreamCodings(upstreamResp));
         } catch (err) {
+          appendErrorLog({ kind: "stream_collect_failed", reqId: "[responses]", error: (err as Error).message });
           return errorResponse(502, "upstream_stream_failed", (err as Error).message);
         }
       } else {

@@ -48,6 +48,7 @@ import { dumpPhase, dumpHeaders, dumpBody, dumpEnabled } from "./dump.js";
 import { clientAcceptsCoding, inflateFormatFor, inflateStreamForCodings, inflateWithCap } from "./inflate.js";
 import { probeFetchDecompressBehavior } from "./decompress-probe.js";
 import { collectAnthropicMessage } from "./sse-collector.js";
+import { appendErrorLog } from "./error-log.js";
 import { buildAnthropicMetadataUserId } from "./trace-headers.js";
 
 /** Options for the proxy handler. */
@@ -262,8 +263,14 @@ export async function proxyRequest(
         }),
       {
         isAborted: () => clientReq.signal.aborted,
-        onRetry: (status) => console.log(`${reqId} upstream gateway ${status}, retrying once`),
-        onAbort: (status) => console.log(`${reqId} upstream gateway ${status}, client already gone, not retrying`),
+        onRetry: (status) => {
+          console.log(`${reqId} upstream gateway ${status}, retrying once`);
+          appendErrorLog({ kind: "upstream_gateway_retry", reqId, status });
+        },
+        onAbort: (status) => {
+          console.log(`${reqId} upstream gateway ${status}, client already gone, not retrying`);
+          appendErrorLog({ kind: "upstream_gateway_skip_client_gone", reqId, status });
+        },
       },
     );
   };
@@ -312,6 +319,7 @@ export async function proxyRequest(
         onRetry: (attempt, err) => {
           if (debug) debugError(reqId, "upstream_connect_retry", `attempt ${attempt}/${MAX_CONNECT_ATTEMPTS - 1} failed (${err.message}), retrying in ${500 * attempt}ms`);
           console.log(`${reqId} upstream connect failed (${err.message}), retry ${attempt + 1}/${MAX_CONNECT_ATTEMPTS} in ${500 * attempt}ms`);
+          appendErrorLog({ kind: "upstream_connect_retry", reqId, attempt, error: err.message });
         },
       },
     );
@@ -324,8 +332,10 @@ export async function proxyRequest(
     // never resent) and a client that hung up before the first connect.
     if ((err as { postWrite?: boolean }).postWrite) {
       console.log(`${reqId} upstream connection lost after the request was written, not retried`);
+      appendErrorLog({ kind: "upstream_postwrite_failure", reqId, error: (err as Error).message });
     } else if ((err as Error).message === CLIENT_ABORTED_BEFORE_CONNECT) {
       console.log(`${reqId} client gone before upstream connect, not retrying`);
+      appendErrorLog({ kind: "client_gone_before_connect", reqId });
     }
     printRow(reqId, format, meta, 502, started, Date.now(), 0, 0, 0);
     return errorResponse(502, "upstream_unreachable", (err as Error).message);
@@ -367,7 +377,10 @@ export async function proxyRequest(
       rejected: planRejected,
       plan,
       config,
-      onFallback: (message) => console.log(`${reqId} ${message}`),
+      onFallback: (message) => {
+        console.log(`${reqId} ${message}`);
+        appendErrorLog({ kind: "plan_fallback", reqId, message });
+      },
       rebuildAndDispatch: () => {
         transformedBody = transformRequestBody(upstreamBody, { format: upstreamFormat, metadataUserId, startPlan: false, provider: config.provider });
         upstreamHeaderPairs = buildUpstreamHeaderPairs(clientReq, upstreamFormat, cred, config.identity, "coding-plan", undefined, clientSession);
@@ -824,6 +837,12 @@ function passthroughResponse(
 
 /** Build a JSON error response. */
 export function errorResponse(status: number, type: string, message: string): Response {
+  // Server-side failures (5xx) land in the persistent error log too — this is
+  // the choke point for every module's error responses (chat rows also record
+  // a `request_error` line via printRow; the kinds distinguish the views).
+  if (status >= 500) {
+    appendErrorLog({ kind: "error_response", status, type, message });
+  }
   const body = JSON.stringify({
     error: { type, message },
   });
@@ -1052,6 +1071,7 @@ async function collectedBatchResponse(
     message = await collectAnthropicMessage(upstream.body!, upstreamCodings(upstream));
   } catch (err) {
     console.log(`${reqId} upstream stream collect failed: ${(err as Error).message}`);
+    appendErrorLog({ kind: "stream_collect_failed", reqId, error: (err as Error).message });
     printRow(reqId, format, meta, 502, started, headersAt, 0, 0, 0);
     return errorResponse(502, "upstream_stream_failed", (err as Error).message);
   }
@@ -1152,6 +1172,7 @@ export function printRow(
   avgTps: number,
   streamEndAt: number,
 ): void {
+  if (status >= 400) recordRequestError(reqId, format, meta, status, started, headersAt, tokens, streamEndAt);
   printHeader();
   const tag = format === "anthropic" ? "ANT" : "OAI";
   const mode = meta.stream ? "stream" : "batch";
@@ -1190,6 +1211,32 @@ function fmtMs(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
   return `${Math.floor(ms / 60_000)}m${Math.floor((ms % 60_000) / 1000)}s`;
+}
+
+/** Persistent error log for every request the client could see fail (4xx/5xx):
+ * lands in the data dir's errors.log with timings (see error-log.ts). */
+function recordRequestError(
+  reqId: string,
+  format: Format,
+  meta: RequestMeta,
+  status: number,
+  started: number,
+  headersAt: number,
+  tokens: number,
+  streamEndAt: number,
+): void {
+  appendErrorLog({
+    kind: "request_error",
+    reqId,
+    format: format === "anthropic" ? "ANT" : "OAI",
+    plan: meta.plan,
+    model: meta.model,
+    mode: meta.stream ? "stream" : "batch",
+    status,
+    ttfbMs: headersAt - started,
+    totalMs: streamEndAt > started ? streamEndAt - started : undefined,
+    tokens: tokens > 0 ? tokens : undefined,
+  });
 }
 
 function observeStream(
