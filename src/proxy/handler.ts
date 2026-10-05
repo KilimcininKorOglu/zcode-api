@@ -27,6 +27,7 @@ import { isCaptchaChallenged, retryOnCaptchaChallenge } from "./captcha-retry.js
 import { activePlan, retryOnPlanExhausted, sniffStartPlanRejection, shouldFallbackPlan, type PlanTier } from "../plan/auto.js";
 import { type ClientSessionResult } from "./client-session.js";
 import { resolveSessionContext } from "./session-context.js";
+import { randomBytes } from "node:crypto";
 import { gzipSync } from "node:zlib";
 
 // captcha.ts is loaded lazily inside the `startPlan` branch (only path that
@@ -1090,8 +1091,14 @@ function localTime(ms: number): string {
   return `${hh}:${mm}:${ss}`;
 }
 
+// The persistent errors.log survives restarts, so a bare counter collides
+// across runs (every run has a #001). A per-boot 4-hex token keeps the id
+// short enough for the request-log table while making each run's ids unique
+// in the file: `a1b2-#001` vs a later boot's `c3d4-#001`.
+const BOOT_TOKEN = randomBytes(2).toString("hex");
+
 function nextReqId(): string {
-  return `#${String(++reqCounter).padStart(3, "0")}`;
+  return `${BOOT_TOKEN}-#${String(++reqCounter).padStart(3, "0")}`;
 }
 
 const DEBUG_BODY_PREVIEW = 200;

@@ -401,7 +401,8 @@ describe("proxyRequest — hybrid plan auto-switch fallback", () => {
 
       const entries = readFileSync(logPath, "utf-8").trim().split("\n").map((l) => JSON.parse(l) as { kind: string; status?: number; reqId?: string });
       expect(entries.some((e) => e.kind === "upstream_gateway_retry" && e.status === 502)).toBe(true);
-      expect(entries.some((e) => e.kind === "request_error" && e.status === 502 && e.reqId)).toBe(true);
+      const row = entries.find((e) => e.kind === "request_error" && e.status === 502);
+      expect(row?.reqId).toMatch(/^[0-9a-f]{4}-#\d{3,}$/);
       expect(calls).toHaveLength(2);
     } finally {
       delete process.env.ZCODE_ERROR_LOG;
