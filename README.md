@@ -218,6 +218,7 @@ The config file is `config.yaml` in the project root (auto-generated on first la
 | `ZCODE_PANEL_PORT`              | `8090`           | Panel port (binds `127.0.0.1` only)                                                                                              |
 | `ZCODE_UPDATE_CHECK`            | on               | Set to `off`/`0` to disable the "new version available" check at startup (notify-only, never auto-updates)                       |
 | `ZCODE_UPDATE_SKIP`             | none             | Comma-separated versions to ignore, e.g. `v4.7.6,v4.7.7`                                                                         |
+| `ZCODE_ERROR_LOG`               | `<config dir>/errors.log` | Persistent JSONL failure log: one line per client-visible 4xx/5xx plus the failure-reason events behind it (retries, aborts, stream failures). Past 5 MB it rotates to `errors.log.1` |
 
 Plan type (`plan`: `coding-plan` personal / `start-plan` trial) can be toggled with <kbd>t</kbd> in the panel and is written back to config.yaml.
 
