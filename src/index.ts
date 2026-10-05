@@ -3,6 +3,7 @@
  * @see .omo/plans/zcode-proxy.md Task 7
  */
 import { loadConfig } from "./config/loader.js";
+import { watchConfigFile, type ConfigWatchHandles } from "./config/watch.js";
 import { AuthManager } from "./auth/manager.js";
 import { startServer, type ProxyServer } from "./server/server.js";
 import {
@@ -351,6 +352,132 @@ async function startServePanel(
   return panel;
 }
 
+/**
+ * The start/stop-on-config background jobs of a serve process: captcha pool
+ * warmup, auto-claim scheduler, plan auto-switch watcher. One instance owns
+ * them from startup through shutdown and exposes the same handles to the
+ * config hot reload (see config/watch.ts), so flipping `claim` or
+ * `planAutoSwitch` in config.yaml starts or stops the job without a restart.
+ */
+function createServeJobs(config: ProxyConfig, auth: AuthManager): {
+  startInitial(): void;
+  handles: ConfigWatchHandles;
+  stopForShutdown(cleared: string[]): void;
+} {
+  let claimScheduler: { stop: () => void } | null = null;
+  let planWatcher: { stop: () => void } | null = null;
+  let captchaModule: { shutdownCaptcha: () => void } | null = null;
+  // The dynamic imports resolve asynchronously; the pending flags keep a
+  // config reload racing the first start from double-starting a job.
+  let claimPending = false;
+  let planPending = false;
+  let captchaPoolStarted = false;
+
+  const startClaimJob = (): void => {
+    stopClaimJob(); // restart-safe: a dirty claim block re-runs this with the new fields
+    claimPending = true;
+    import("./claim/runtime.js")
+      .then((m) => {
+        claimPending = false;
+        claimScheduler = m.startAutoClaim(config, auth);
+        console.log(`  claim: auto ON (poll ${Math.round(config.claim.pollIntervalMs / 1000)}s)`);
+      })
+      .catch((err) => {
+        claimPending = false;
+        console.error(`[claim] scheduler failed to start: ${(err as Error).message}`);
+      });
+  };
+  const stopClaimJob = (): void => {
+    claimPending = false;
+    if (!claimScheduler) return;
+    claimScheduler.stop();
+    claimScheduler = null;
+    console.log("  claim: auto OFF");
+  };
+  const startPlanWatcherJob = (): void => {
+    stopPlanWatcherJob();
+    planPending = true;
+    import("./plan/auto.js")
+      .then((m) => {
+        planPending = false;
+        planWatcher = m.startPlanAutoWatcher(config);
+        console.log(`  plan auto-switch: ON (prefer start-plan while it has balance; poll ${Math.round(m.PLAN_POLL_INTERVAL_MS / 1000)}s)`);
+      })
+      .catch((err) => {
+        planPending = false;
+        console.error(`[plan] auto-switch watcher failed to start: ${(err as Error).message}`);
+      });
+  };
+  const stopPlanWatcherJob = (): void => {
+    planPending = false;
+    if (!planWatcher) return;
+    planWatcher.stop();
+    planWatcher = null;
+    console.log("  plan auto-switch: OFF");
+  };
+  const warmCaptchaPoolJob = (): void => {
+    if (captchaPoolStarted || config.plan !== "start-plan") return;
+    // Pre-solve the captcha token pool in the background so first requests
+    // don't pay the full solve latency (in-process happy-dom backend).
+    captchaPoolStarted = true;
+    import("./proxy/captcha.js")
+      .then(async (m) => {
+        captchaModule = m;
+        await m.startCaptchaPool(config.identity.appVersion);
+      })
+      .catch((err) => {
+        captchaPoolStarted = false;
+        console.error(`[captcha] pool warmup failed: ${(err as Error).message}`);
+      });
+  };
+
+  return {
+    startInitial() {
+      if (config.plan === "start-plan") warmCaptchaPoolJob();
+      if (config.claim.enabled && config.claim.auto) startClaimJob();
+      if (config.planAutoSwitch) startPlanWatcherJob();
+    },
+    handles: {
+      claimRunning: () => claimScheduler !== null || claimPending,
+      startClaim: startClaimJob,
+      stopClaim: stopClaimJob,
+      planWatcherRunning: () => planWatcher !== null || planPending,
+      startPlanWatcher: startPlanWatcherJob,
+      stopPlanWatcher: stopPlanWatcherJob,
+      warmCaptchaPool: warmCaptchaPoolJob,
+    },
+    stopForShutdown(cleared) {
+      if (planWatcher) {
+        try {
+          planWatcher.stop();
+          cleared.push("plan auto-switch");
+        } catch {
+          /* already stopped */
+        }
+        planWatcher = null;
+      }
+      if (claimScheduler) {
+        try {
+          claimScheduler.stop();
+          cleared.push("auto-claim");
+        } catch {
+          /* already stopped */
+        }
+        claimScheduler = null;
+      }
+      if (captchaModule) {
+        try {
+          captchaModule.shutdownCaptcha();
+          cleared.push("captcha pool");
+        } catch {
+          /* pool never started */
+        }
+        captchaModule = null;
+      }
+    },
+  };
+}
+
 async function serve(configPath: string | undefined, debug: boolean): Promise<void> {
   const path = configPath ?? process.env.ZCODE_PROXY_CONFIG ?? "config.yaml";
   if (ensureConfigFile(path)) {
@@ -383,36 +510,12 @@ async function serve(configPath: string | undefined, debug: boolean): Promise<vo
   console.log(`zcode-proxy listening on ${url}`);
   // Handles for the background timers started below, so `shutdown` can clear
   // them without the proxy handle being involved (issue #58 review, P2).
-  let claimScheduler: { stop: () => void } | null = null;
-  let planWatcher: { stop: () => void } | null = null;
-  let captchaModule: { shutdownCaptcha: () => void } | null = null;
+  const jobs = createServeJobs(config, auth);
+  jobs.startInitial();
 
-  if (config.plan === "start-plan") {
-    // Pre-solve the captcha token pool in the background so first requests
-    // don't pay the full solve latency (in-process happy-dom backend).
-    import("./proxy/captcha.js")
-      .then(async (m) => {
-        captchaModule = m;
-        await m.startCaptchaPool(config.identity.appVersion);
-      })
-      .catch((err) => console.error(`[captcha] pool warmup failed: ${(err as Error).message}`));
-  }
-  if (config.claim.enabled && config.claim.auto) {
-    import("./claim/runtime.js")
-      .then((m) => {
-        claimScheduler = m.startAutoClaim(config, auth);
-        console.log(`  claim: auto ON (poll ${Math.round(config.claim.pollIntervalMs / 1000)}s)`);
-      })
-      .catch((err) => console.error(`[claim] scheduler failed to start: ${(err as Error).message}`));
-  }
-  if (config.planAutoSwitch) {
-    import("./plan/auto.js")
-      .then((m) => {
-        planWatcher = m.startPlanAutoWatcher(config);
-        console.log(`  plan auto-switch: ON (prefer start-plan while it has balance; poll ${Math.round(m.PLAN_POLL_INTERVAL_MS / 1000)}s)`);
-      })
-      .catch((err) => console.error(`[plan] auto-switch watcher failed to start: ${(err as Error).message}`));
-  }
+  // Hot reload: edits to config.yaml apply in place without a restart
+  // (see config/watch.ts). `server` (port/host) still needs a restart.
+  const configWatcher = watchConfigFile(path, config, jobs.handles);
   console.log(`  provider: ${config.provider}`);
   console.log(`  plan: ${config.plan}${config.planAutoSwitch ? " (auto-switch on: prefers start-plan while it has balance)" : ""}`);
   console.log(`  models: ${config.models.length} available`);
@@ -447,34 +550,9 @@ async function serve(configPath: string | undefined, debug: boolean): Promise<vo
     if (shuttingDown) return;
     shuttingDown = true;
     closePanel();
+    configWatcher.stop();
     const cleared: string[] = [];
-    if (planWatcher) {
-      try {
-        planWatcher.stop();
-        cleared.push("plan auto-switch");
-      } catch {
-        /* already stopped */
-      }
-      planWatcher = null;
-    }
-    if (claimScheduler) {
-      try {
-        claimScheduler.stop();
-        cleared.push("auto-claim");
-      } catch {
-        /* already stopped */
-      }
-      claimScheduler = null;
-    }
-    if (captchaModule) {
-      try {
-        captchaModule.shutdownCaptcha();
-        cleared.push("captcha pool");
-      } catch {
-        /* pool never started */
-      }
-      captchaModule = null;
-    }
+    jobs.stopForShutdown(cleared);
     if (cleared.length > 0) console.log(`shutdown: cleared ${cleared.join(" + ")} timers`);
     if (serverRef.current) {
       // Closes the listener and exits the process (`stop(true)`).
