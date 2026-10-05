@@ -29,7 +29,8 @@ describe("request log row durations", () => {
 
   it("renders durations above one second in readable units", async () => {
     const out = await captureRow({ model: "glm-5.3-flash", stream: true }, 0, 13_036, 60_054);
-    expect(out).toContain("| #041 |");
+    // The id column is boot-scoped wide (REQ_ID_WIDTH = `741f-#001` = 9).
+    expect(out).toContain(`| ${"#041".padEnd(9)} |`);
     expect(out).toContain("13.0s");
     expect(out).toContain("1m0s");
     expect(out).not.toContain("13036ms");
