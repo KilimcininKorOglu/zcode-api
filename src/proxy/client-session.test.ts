@@ -2,7 +2,7 @@
  * Tests for local client session inference.
  */
 import { describe, it, expect } from "bun:test";
-import { createClientSessionResolver } from "./client-session.js";
+import { createClientSessionResolver, clientTraceFields } from "./client-session.js";
 
 function makeReq(body: string, headers: Record<string, string> = {}): Request {
   return new Request("http://localhost:8080/v1/messages", {
@@ -13,6 +13,26 @@ function makeReq(body: string, headers: Record<string, string> = {}): Request {
 }
 
 const CFG = { mode: "enforce" as const, ttlSeconds: 900, maxSessions: 1024 };
+
+describe("clientTraceFields", () => {
+  it("copies the request and session id headers for error-log entries", () => {
+    const fields = clientTraceFields(makeReq("{}", {
+      "x-request-id": "req_abc",
+      "x-claude-code-session-id": "ses_123",
+    }));
+    expect(fields.clientRequestId).toBe("req_abc");
+    expect(fields.clientSessionId).toBe("ses_123");
+  });
+
+  it("reads headers only, so body metadata is not re-parsed on the hot path", () => {
+    const body = JSON.stringify({ metadata: { request_id: "req_body_only" } });
+    expect(clientTraceFields(makeReq(body))).toEqual({});
+  });
+
+  it("stays keyless when the client sends no trace headers", () => {
+    expect(clientTraceFields(makeReq("{}"))).toEqual({});
+  });
+});
 
 describe("client session resolver", () => {
   it("preserves explicit ZCode-style metadata IDs without hashing them", () => {

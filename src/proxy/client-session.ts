@@ -143,6 +143,19 @@ function requestTraceContext(req: Request, body: string | undefined): ExplicitTr
   };
 }
 
+/**
+ * Client-supplied correlation ids for the persistent error log, read from
+ * headers only (no body re-parse on the hot path): an errors.log line can then
+ * be matched against the request id / session id the client's own logs print.
+ */
+export function clientTraceFields(req: Request): { clientRequestId?: string; clientSessionId?: string } {
+  const trace = requestTraceContext(req, undefined);
+  return {
+    ...(trace.requestId ? { clientRequestId: trace.requestId } : {}),
+    ...(trace.sessionId ? { clientSessionId: trace.sessionId } : {}),
+  };
+}
+
 function explicitResult(trace: ExplicitTraceContext, config: ClientIdentityConfig): ClientSessionResult {
   return {
     source: "explicit",

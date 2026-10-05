@@ -23,7 +23,8 @@ import type { ProxyConfig } from "../config/types.js";
 import type { AuthManager } from "../auth/manager.js";
 import { buildUpstreamRequest, buildUpstreamHeaderPairs, type UpstreamHeaderPair } from "./upstream.js";
 import { isCaptchaChallenged, retryOnCaptchaChallenge } from "./captcha-retry.js";
-import { CLIENT_ABORTED_BEFORE_CONNECT, dispatchWithConnectRetry, retryOnGatewayError, withStreamEnabled, isEventStream, upstreamCodings } from "./handler.js";
+import { CLIENT_ABORTED_BEFORE_CONNECT, dispatchWithConnectRetry, retryOnGatewayError, withStreamEnabled, isEventStream, upstreamCodings, upstreamRequestId } from "./handler.js";
+import { clientTraceFields } from "./client-session.js";
 import { collectAnthropicMessage } from "./sse-collector.js";
 import { appendErrorLog } from "./error-log.js";
 import type * as CaptchaExports from "./captcha.js";
@@ -119,6 +120,8 @@ export async function handleResponses(
   }
 
   const stream = req.stream === true;
+  // Client correlation ids for the error-log entries below (headers only).
+  const traceFields = clientTraceFields(clientReq);
 
   // ── 2. resolve previous_response_id ──
   let historyItems: ResponsesInputItem[] = [];
@@ -250,13 +253,13 @@ export async function handleResponses(
         }),
       {
         isAborted: () => clientReq.signal.aborted,
-        onRetry: (status) => {
+        onRetry: (status, resp) => {
           console.log(`[responses] upstream gateway ${status}, retrying once`);
-          appendErrorLog({ kind: "upstream_gateway_retry", reqId: "[responses]", status });
+          appendErrorLog({ kind: "upstream_gateway_retry", reqId: "[responses]", status, upstreamRequestId: upstreamRequestId(resp), ...traceFields });
         },
-        onAbort: (status) => {
+        onAbort: (status, resp) => {
           console.log(`[responses] upstream gateway ${status}, client already gone, not retrying`);
-          appendErrorLog({ kind: "upstream_gateway_skip_client_gone", reqId: "[responses]", status });
+          appendErrorLog({ kind: "upstream_gateway_skip_client_gone", reqId: "[responses]", status, upstreamRequestId: upstreamRequestId(resp), ...traceFields });
         },
       },
     );
@@ -276,10 +279,10 @@ export async function handleResponses(
     // otherwise.
     if ((err as { postWrite?: boolean }).postWrite) {
       console.log(`[responses] upstream connection lost after the request was written, not retried`);
-      appendErrorLog({ kind: "upstream_postwrite_failure", reqId: "[responses]", error: (err as Error).message });
+      appendErrorLog({ kind: "upstream_postwrite_failure", reqId: "[responses]", error: (err as Error).message, ...traceFields });
     } else if ((err as Error).message === CLIENT_ABORTED_BEFORE_CONNECT) {
       console.log(`[responses] client gone before upstream connect, not retrying`);
-      appendErrorLog({ kind: "client_gone_before_connect", reqId: "[responses]" });
+      appendErrorLog({ kind: "client_gone_before_connect", reqId: "[responses]", ...traceFields });
     }
     return errorResponse(502, "upstream_unreachable", (err as Error).message);
   }
@@ -303,7 +306,7 @@ export async function handleResponses(
       config: opts.config,
       onFallback: (message) => {
         console.log(`[responses] ${message}`);
-        appendErrorLog({ kind: "plan_fallback", reqId: "[responses]", message });
+        appendErrorLog({ kind: "plan_fallback", reqId: "[responses]", message, ...traceFields });
       },
       rebuildAndDispatch: () => {
         transformedBody = transformRequestBody(anthropicJson, {
@@ -372,7 +375,7 @@ export async function handleResponses(
         try {
           parsedAnthropic = await collectAnthropicMessage(upstreamResp.body, upstreamCodings(upstreamResp));
         } catch (err) {
-          appendErrorLog({ kind: "stream_collect_failed", reqId: "[responses]", error: (err as Error).message });
+          appendErrorLog({ kind: "stream_collect_failed", reqId: "[responses]", error: (err as Error).message, upstreamRequestId: upstreamRequestId(upstreamResp), ...traceFields });
           return errorResponse(502, "upstream_stream_failed", (err as Error).message);
         }
       } else {

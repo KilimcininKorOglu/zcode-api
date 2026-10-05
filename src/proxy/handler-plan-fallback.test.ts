@@ -95,10 +95,10 @@ function makeFetch(calls: RecordedCall[]): typeof fetch {
   ) as typeof fetch;
 }
 
-function makeClientReq(): Request {
+function makeClientReq(headers: Record<string, string> = {}): Request {
   return new Request("http://localhost:8080/v1/messages", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
     body: '{"model":"glm-4.6","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}',
   });
 }
@@ -391,18 +391,25 @@ describe("proxyRequest — hybrid plan auto-switch fallback", () => {
             apiKey: req.headers.get("x-api-key"),
             body: await req.clone().text(),
           });
-          return new Response("bad gateway", { status: 502 });
+          return new Response("bad gateway", { status: 502, headers: { "x-request-id": "gw-req-42" } });
         }) as typeof fetch,
         { preconnect: () => {} },
       ) as typeof fetch;
       const config: ProxyConfig = { ...TEST_CONFIG, plan: "coding-plan", planAutoSwitch: false };
-      const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
+      const resp = await proxyRequest(makeClientReq({ "x-request-id": "client-req-7" }), "anthropic", { config, auth: makeAuth(), fetchImpl });
       expect(resp.status).toBe(502);
 
-      const entries = readFileSync(logPath, "utf-8").trim().split("\n").map((l) => JSON.parse(l) as { kind: string; status?: number; reqId?: string });
-      expect(entries.some((e) => e.kind === "upstream_gateway_retry" && e.status === 502)).toBe(true);
+      // The failure entries must carry the correlation ids: the gateway's own
+      // x-request-id and the ids the client sent, so a client-side error can
+      // be matched against this file without guesswork.
+      const entries = readFileSync(logPath, "utf-8").trim().split("\n").map((l) => JSON.parse(l) as { kind: string; status?: number; reqId?: string; clientRequestId?: string; clientSessionId?: string; upstreamRequestId?: string });
+      const retry = entries.find((e) => e.kind === "upstream_gateway_retry" && e.status === 502);
+      expect(retry?.upstreamRequestId).toBe("gw-req-42");
+      expect(retry?.clientRequestId).toBe("client-req-7");
       const row = entries.find((e) => e.kind === "request_error" && e.status === 502);
       expect(row?.reqId).toMatch(/^[0-9a-f]{4}-#\d{3,}$/);
+      expect(row?.clientRequestId).toBe("client-req-7");
+      expect(row?.upstreamRequestId).toBe("gw-req-42");
       expect(calls).toHaveLength(2);
     } finally {
       delete process.env.ZCODE_ERROR_LOG;

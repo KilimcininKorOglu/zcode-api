@@ -25,7 +25,7 @@ import { sendOrderedUpstreamRequest, orderedAdvertisedCodings } from "./ordered-
 import { transformRequestBody } from "./body-transformer.js";
 import { isCaptchaChallenged, retryOnCaptchaChallenge } from "./captcha-retry.js";
 import { activePlan, retryOnPlanExhausted, sniffStartPlanRejection, shouldFallbackPlan, type PlanTier } from "../plan/auto.js";
-import { type ClientSessionResult } from "./client-session.js";
+import { clientTraceFields, type ClientSessionResult } from "./client-session.js";
 import { resolveSessionContext } from "./session-context.js";
 import { randomBytes } from "node:crypto";
 import { gzipSync } from "node:zlib";
@@ -108,6 +108,7 @@ export async function proxyRequest(
   }
 
   const meta = peekBody(body);
+  Object.assign(meta, clientTraceFields(clientReq));
 
   if (dumpEnabled()) {
     dumpPhase(reqId, "client_in", {
@@ -264,13 +265,13 @@ export async function proxyRequest(
         }),
       {
         isAborted: () => clientReq.signal.aborted,
-        onRetry: (status) => {
+        onRetry: (status, resp) => {
           console.log(`${reqId} upstream gateway ${status}, retrying once`);
-          appendErrorLog({ kind: "upstream_gateway_retry", reqId, status });
+          appendErrorLog({ kind: "upstream_gateway_retry", reqId, status, upstreamRequestId: upstreamRequestId(resp), ...clientTraceFields(clientReq) });
         },
-        onAbort: (status) => {
+        onAbort: (status, resp) => {
           console.log(`${reqId} upstream gateway ${status}, client already gone, not retrying`);
-          appendErrorLog({ kind: "upstream_gateway_skip_client_gone", reqId, status });
+          appendErrorLog({ kind: "upstream_gateway_skip_client_gone", reqId, status, upstreamRequestId: upstreamRequestId(resp), ...clientTraceFields(clientReq) });
         },
       },
     );
@@ -320,7 +321,7 @@ export async function proxyRequest(
         onRetry: (attempt, err) => {
           if (debug) debugError(reqId, "upstream_connect_retry", `attempt ${attempt}/${MAX_CONNECT_ATTEMPTS - 1} failed (${err.message}), retrying in ${500 * attempt}ms`);
           console.log(`${reqId} upstream connect failed (${err.message}), retry ${attempt + 1}/${MAX_CONNECT_ATTEMPTS} in ${500 * attempt}ms`);
-          appendErrorLog({ kind: "upstream_connect_retry", reqId, attempt, error: err.message });
+          appendErrorLog({ kind: "upstream_connect_retry", reqId, attempt, error: err.message, ...clientTraceFields(clientReq) });
         },
       },
     );
@@ -333,15 +334,16 @@ export async function proxyRequest(
     // never resent) and a client that hung up before the first connect.
     if ((err as { postWrite?: boolean }).postWrite) {
       console.log(`${reqId} upstream connection lost after the request was written, not retried`);
-      appendErrorLog({ kind: "upstream_postwrite_failure", reqId, error: (err as Error).message });
+      appendErrorLog({ kind: "upstream_postwrite_failure", reqId, error: (err as Error).message, ...clientTraceFields(clientReq) });
     } else if ((err as Error).message === CLIENT_ABORTED_BEFORE_CONNECT) {
       console.log(`${reqId} client gone before upstream connect, not retrying`);
-      appendErrorLog({ kind: "client_gone_before_connect", reqId });
+      appendErrorLog({ kind: "client_gone_before_connect", reqId, ...clientTraceFields(clientReq) });
     }
     printRow(reqId, format, meta, 502, started, Date.now(), 0, 0, 0);
     return errorResponse(502, "upstream_unreachable", (err as Error).message);
   }
   const headersAt = Date.now();
+  meta.upstreamRequestId = upstreamRequestId(upstreamResp);
 
   if (debug) {
     debugLine(reqId, `← ${upstreamResp.status} ${upstreamResp.statusText}`);
@@ -380,7 +382,7 @@ export async function proxyRequest(
       config,
       onFallback: (message) => {
         console.log(`${reqId} ${message}`);
-        appendErrorLog({ kind: "plan_fallback", reqId, message });
+        appendErrorLog({ kind: "plan_fallback", reqId, message, ...clientTraceFields(clientReq) });
       },
       rebuildAndDispatch: () => {
         transformedBody = transformRequestBody(upstreamBody, { format: upstreamFormat, metadataUserId, startPlan: false, provider: config.provider });
@@ -586,16 +588,17 @@ export const GATEWAY_RETRY_BACKOFF_MS = 1000;
  * a FRESH request each call. Exactly one retry, so a sustained upstream
  * outage never multiplies the client's wait. A client that already hung up
  * skips the retry (nobody receives it) — reported through `onAbort` so the
- * request log distinguishes a retried failure from a skipped one.
+ * request log distinguishes a retried failure from a skipped one. Both
+ * callbacks receive the failed Response so callers can log its x-request-id.
  */
 export async function retryOnGatewayError(
   send: () => Promise<Response>,
-  opts: { isAborted?: () => boolean; onRetry?: (status: number) => void; onAbort?: (status: number) => void } = {},
+  opts: { isAborted?: () => boolean; onRetry?: (status: number, resp: Response) => void; onAbort?: (status: number, resp: Response) => void } = {},
 ): Promise<Response> {
   const resp = await send();
   if (!GATEWAY_RETRY_STATUSES.has(resp.status)) return resp;
   if (opts.isAborted?.()) {
-    opts.onAbort?.(resp.status);
+    opts.onAbort?.(resp.status, resp);
     return resp;
   }
   try {
@@ -603,7 +606,7 @@ export async function retryOnGatewayError(
   } catch {
     // body already closed — nothing to release
   }
-  opts.onRetry?.(resp.status);
+  opts.onRetry?.(resp.status, resp);
   await new Promise((r) => setTimeout(r, GATEWAY_RETRY_BACKOFF_MS));
   return send();
 }
@@ -1017,6 +1020,11 @@ export interface RequestMeta {
   stream: boolean;
   /** Plan the request is served on, set by proxyRequest after resolution. */
   plan?: PlanTier;
+  /** Client-supplied correlation ids (clientTraceFields), copied into error-log entries. */
+  clientRequestId?: string;
+  clientSessionId?: string;
+  /** The upstream's x-request-id, set after dispatch, copied into error-log entries. */
+  upstreamRequestId?: string;
 }
 
 function peekBody(body: string | undefined): RequestMeta {
@@ -1054,6 +1062,14 @@ export function upstreamCodings(resp: Response): string[] {
 }
 
 /**
+ * The gateway's own request id: the handle to quote when correlating an
+ * upstream failure with the provider's side of the story.
+ */
+export function upstreamRequestId(resp: Response): string | undefined {
+  return resp.headers.get("x-request-id") ?? undefined;
+}
+
+/**
  * Reassemble a batch-as-stream upstream response into the single Anthropic
  * JSON the batch client expects (see `withStreamEnabled`). Collect failures
  * (error events, truncation) surface as 502 with the reason logged.
@@ -1072,7 +1088,7 @@ async function collectedBatchResponse(
     message = await collectAnthropicMessage(upstream.body!, upstreamCodings(upstream));
   } catch (err) {
     console.log(`${reqId} upstream stream collect failed: ${(err as Error).message}`);
-    appendErrorLog({ kind: "stream_collect_failed", reqId, error: (err as Error).message });
+    appendErrorLog({ kind: "stream_collect_failed", reqId, error: (err as Error).message, upstreamRequestId: upstreamRequestId(upstream), ...clientTraceFields(clientReq) });
     printRow(reqId, format, meta, 502, started, headersAt, 0, 0, 0);
     return errorResponse(502, "upstream_stream_failed", (err as Error).message);
   }
@@ -1243,6 +1259,9 @@ function recordRequestError(
     ttfbMs: headersAt - started,
     totalMs: streamEndAt > started ? streamEndAt - started : undefined,
     tokens: tokens > 0 ? tokens : undefined,
+    ...(meta.clientRequestId ? { clientRequestId: meta.clientRequestId } : {}),
+    ...(meta.clientSessionId ? { clientSessionId: meta.clientSessionId } : {}),
+    ...(meta.upstreamRequestId ? { upstreamRequestId: meta.upstreamRequestId } : {}),
   });
 }
 
