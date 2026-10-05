@@ -358,12 +358,20 @@ async function startServePanel(
  * them from startup through shutdown and exposes the same handles to the
  * config hot reload (see config/watch.ts), so flipping `claim` or
  * `planAutoSwitch` in config.yaml starts or stops the job without a restart.
+ * Shared by the serve, TUI and Android entries; `jobLabels` adapts the
+ * job log lines to each surface (Android notes the wait-for-login).
  */
-function createServeJobs(config: ProxyConfig, auth: AuthManager): {
+export function createServeJobs(
+  config: ProxyConfig,
+  auth: AuthManager,
+  jobLabels: { indent?: string; note?: string } = {},
+): {
   startInitial(): void;
   handles: ConfigWatchHandles;
   stopForShutdown(cleared: string[]): void;
 } {
+  const indent = jobLabels.indent ?? "  ";
+  const note = jobLabels.note ?? "";
   let claimScheduler: { stop: () => void } | null = null;
   let planWatcher: { stop: () => void } | null = null;
   let captchaModule: { shutdownCaptcha: () => void } | null = null;
@@ -380,7 +388,7 @@ function createServeJobs(config: ProxyConfig, auth: AuthManager): {
       .then((m) => {
         claimPending = false;
         claimScheduler = m.startAutoClaim(config, auth);
-        console.log(`  claim: auto ON (poll ${Math.round(config.claim.pollIntervalMs / 1000)}s)`);
+        console.log(`${indent}claim: auto ON (poll ${Math.round(config.claim.pollIntervalMs / 1000)}s${note})`);
       })
       .catch((err) => {
         claimPending = false;
@@ -392,7 +400,7 @@ function createServeJobs(config: ProxyConfig, auth: AuthManager): {
     if (!claimScheduler) return;
     claimScheduler.stop();
     claimScheduler = null;
-    console.log("  claim: auto OFF");
+    console.log(`${indent}claim: auto OFF`);
   };
   const startPlanWatcherJob = (): void => {
     stopPlanWatcherJob();
@@ -401,7 +409,7 @@ function createServeJobs(config: ProxyConfig, auth: AuthManager): {
       .then((m) => {
         planPending = false;
         planWatcher = m.startPlanAutoWatcher(config);
-        console.log(`  plan auto-switch: ON (prefer start-plan while it has balance; poll ${Math.round(m.PLAN_POLL_INTERVAL_MS / 1000)}s)`);
+        console.log(`${indent}plan auto-switch: ON (prefer start-plan while it has balance; poll ${Math.round(m.PLAN_POLL_INTERVAL_MS / 1000)}s${note})`);
       })
       .catch((err) => {
         planPending = false;
@@ -413,7 +421,7 @@ function createServeJobs(config: ProxyConfig, auth: AuthManager): {
     if (!planWatcher) return;
     planWatcher.stop();
     planWatcher = null;
-    console.log("  plan auto-switch: OFF");
+    console.log(`${indent}plan auto-switch: OFF`);
   };
   const warmCaptchaPoolJob = (): void => {
     if (captchaPoolStarted || config.plan !== "start-plan") return;
@@ -671,22 +679,11 @@ async function runAndroid(): Promise<void> {
 
   console.log("control listener ready; proxy stopped — use startProxy command to start");
 
-  if (config.claim.enabled && config.claim.auto) {
-    import("./claim/runtime.js")
-      .then((m) => {
-        m.startAutoClaim(config, auth);
-        console.log(`[claim] auto ON (poll ${Math.round(config.claim.pollIntervalMs / 1000)}s; waits for login)`);
-      })
-      .catch((err) => console.error(`[claim] scheduler failed to start: ${(err as Error).message}`));
-  }
-  if (config.planAutoSwitch) {
-    import("./plan/auto.js")
-      .then((m) => {
-        m.startPlanAutoWatcher(config);
-        console.log(`[plan] auto-switch ON (poll ${Math.round(m.PLAN_POLL_INTERVAL_MS / 1000)}s; waits for login)`);
-      })
-      .catch((err) => console.error(`[plan] auto-switch watcher failed to start: ${(err as Error).message}`));
-  }
+  const jobs = createServeJobs(config, auth, { indent: "", note: "; waits for login" });
+  jobs.startInitial();
+  // Hot reload: edits to config.yaml apply in place without a restart
+  // (see config/watch.ts). `server` (port/host) still needs a restart.
+  const configWatcher = watchConfigFile(path, config, jobs.handles);
 
   const controlPort = Number(process.env.ZCODE_CONTROL_PORT ?? 0) || 0;
   const controlState: ControlState = {
@@ -712,9 +709,11 @@ async function runAndroid(): Promise<void> {
   console.log(`plan: ${config.plan}`);
 
   process.on("SIGINT", () => {
+    configWatcher.stop();
     void controlListener.close().then(() => serverRef.current?.stop(true));
   });
   process.on("SIGTERM", () => {
+    configWatcher.stop();
     void controlListener.close().then(() => serverRef.current?.stop(true));
   });
 }

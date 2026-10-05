@@ -23,7 +23,8 @@ import { KeyResolver } from "../auth/resolver.js";
 import { openBrowser } from "../runtime/open-browser.js";
 import { pasteLoginInstructions, readPastedLine, boldIfTTY } from "../runtime/paste-login.js";
 import { isGuestOriginError, describeGuestError } from "../runtime/guest-error.js";
-import { ensureDeviceMidInConfig, VERSION, type ServeArgs } from "../index.js";
+import { ensureDeviceMidInConfig, VERSION, createServeJobs, type ServeArgs } from "../index.js";
+import { watchConfigFile, type ConfigWatcher } from "../config/watch.js";
 import { collectQuotaSnapshot, type QuotaSnapshot } from "../server/routes-quota.js";
 import { activePlan } from "../plan/auto.js";
 import { appendFileSync } from "node:fs";
@@ -375,30 +376,15 @@ export async function runTui(args: ServeArgs): Promise<void> {
   // Captcha warmup + claim scheduler start once per process, even across
   // proxy stop/start cycles — the pools and scheduler are process-global.
   let backgroundJobsStarted = false;
+  const jobs = createServeJobs(config, auth);
+  let configWatcher: ConfigWatcher | null = null;
+
   function startBackgroundJobsOnce(): void {
     if (backgroundJobsStarted) return;
     backgroundJobsStarted = true;
-    if (config.plan === "start-plan") {
-      import("../proxy/captcha.js")
-        .then((m) => m.startCaptchaPool(config.identity.appVersion))
-        .catch((err) => console.error(`[captcha] pool warmup failed: ${(err as Error).message}`));
-    }
-    if (config.claim.enabled && config.claim.auto) {
-      import("../claim/runtime.js")
-        .then((m) => {
-          m.startAutoClaim(config, auth);
-          console.log(`[claim] auto ON (poll ${Math.round(config.claim.pollIntervalMs / 1000)}s)`);
-        })
-        .catch((err) => console.error(`[claim] scheduler failed to start: ${(err as Error).message}`));
-    }
-    if (config.planAutoSwitch) {
-      import("../plan/auto.js")
-        .then((m) => {
-          m.startPlanAutoWatcher(config);
-          console.log(`[plan] auto-switch ON (poll ${Math.round(m.PLAN_POLL_INTERVAL_MS / 1000)}s)`);
-        })
-        .catch((err) => console.error(`[plan] auto-switch watcher failed to start: ${(err as Error).message}`));
-    }
+    jobs.startInitial();
+    // Hot reload: external config.yaml edits apply in place (config/watch.ts).
+    configWatcher = watchConfigFile(path, config, jobs.handles);
   }
 
   // --- provider / plan switching (mirrors the Android setConfig command) ---
@@ -674,6 +660,7 @@ export async function runTui(args: ServeArgs): Promise<void> {
     restore();
     restoreConsole();
     restoreStdio();
+    try { configWatcher?.stop(); } catch { /* watcher not started */ }
     try { serverRef.current?.stop(false); } catch { /* already closed */ }
   }
   // Render watchdog: if the 33ms render chain ever dies (stuck timer id,
