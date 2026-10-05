@@ -23,7 +23,7 @@ afterEach(() => {
 });
 
 describe("appendErrorLog", () => {
-  it("writes self-contained JSONL entries with timestamps", () => {
+  it("writes self-contained JSONL entries with local-offset timestamps", () => {
     appendErrorLog({ kind: "request_error", reqId: "#001", status: 502 });
     appendErrorLog({ kind: "upstream_gateway_retry", reqId: "#001", status: 504 });
     const lines = readFileSync(errorLogPath(), "utf-8").trim().split("\n");
@@ -32,7 +32,8 @@ describe("appendErrorLog", () => {
     expect(first.kind).toBe("request_error");
     expect(first.reqId).toBe("#001");
     expect(first.status).toBe(502);
-    expect(first.ts).toBeTruthy();
+    // Local time WITH the UTC offset (matches the request log rows), not UTC Z.
+    expect(first.ts).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}$/);
   });
 
   it("resolves the explicit ZCODE_ERROR_LOG path", () => {

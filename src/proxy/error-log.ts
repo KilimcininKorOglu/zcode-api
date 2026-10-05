@@ -52,12 +52,26 @@ export function appendErrorLog(entry: Record<string, unknown>): void {
   const path = errorLogPath();
   try {
     rotateErrorLogIfNeeded(path, MAX_BYTES);
-    const line = JSON.stringify({ ts: new Date().toISOString(), ...entry });
+    const line = JSON.stringify({ ts: localIsoTimestamp(), ...entry });
     appendFileSync(path, line + "\n");
   } catch (err) {
     disabled = true;
     console.warn(`[proxy] error log disabled (cannot write ${path}): ${(err as Error).message}`);
   }
+}
+
+/**
+ * Local-time ISO timestamp WITH its UTC offset (`2026-10-05T04:07:11.880+03:00`
+ * under the compose image's TZ=Europe/Istanbul), so file entries line up with
+ * the request-log rows (also local) without mental UTC conversion.
+ */
+function localIsoTimestamp(): string {
+  const d = new Date();
+  const pad = (n: number, width = 2): string => String(n).padStart(width, "0");
+  const offsetMinutes = -d.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const abs = Math.abs(offsetMinutes);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
 }
 
 /** Move an oversized log aside (single generation: errors.log.1 is overwritten). */
