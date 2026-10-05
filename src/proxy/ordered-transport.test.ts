@@ -287,8 +287,9 @@ describe("proxyRequest — ordered transport + brotli SSE (ultra gateway regress
       expect(resp.headers.get("content-type")).toContain("text/event-stream");
       const text = await resp.text();
       expect(text).toContain("PONG");
-      // The upstream saw the client's list (all tokens supported on Bun → cap is a no-op here).
-      expect(s.seenAcceptEncoding()).toBe("gzip, deflate, br, zstd");
+      // The upstream saw the client's list minus zstd (stripped unconditionally
+      // in upstream.ts); br survives the ordered-transport cap on Bun.
+      expect(s.seenAcceptEncoding()).toBe("gzip, deflate, br");
     } finally {
       s.server.close();
     }

@@ -30,11 +30,13 @@ const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
  */
 let advertisedCodingsCache: readonly string[] | null = null;
 
-/** `accept-encoding` tokens this transport can inflate itself (memoized, `x-gzip` excluded). */
+/** `accept-encoding` tokens this transport can inflate itself (memoized;
+ * `x-gzip` is an alias and `zstd` is never requested — the proxy strips zstd
+ * from every upstream accept-encoding, see upstream.ts). */
 export function orderedAdvertisedCodings(): readonly string[] {
   if (advertisedCodingsCache === null) {
     advertisedCodingsCache = KNOWN_CODING_TOKENS
-      .filter((coding) => coding !== "x-gzip" && inflateFormatFor(coding) !== null);
+      .filter((coding) => coding !== "x-gzip" && coding !== "zstd" && inflateFormatFor(coding) !== null);
   }
   return advertisedCodingsCache;
 }

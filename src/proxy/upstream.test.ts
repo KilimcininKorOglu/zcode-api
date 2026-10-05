@@ -5,7 +5,7 @@
 import { describe, it, expect, mock, beforeEach } from "bun:test";
 import { gzipSync } from "node:zlib";
 import { createServer } from "node:net";
-import { buildUpstreamRequest, buildUpstreamHeaderPairs, buildUpstreamURL, buildAuthHeaders } from "./upstream.js";
+import { buildUpstreamRequest, buildUpstreamHeaderPairs, buildUpstreamURL, buildAuthHeaders, stripZstdAcceptEncoding } from "./upstream.js";
 import { sendOrderedUpstreamRequest } from "./ordered-transport.js";
 import { buildZcodeTraceHeaders } from "./trace-headers.js";
 import { proxyRequest, errorResponse, shouldUseOrderedTransport, stripAutoDecodedEncoding } from "./handler.js";
@@ -374,6 +374,26 @@ describe("buildUpstreamHeaderPairs — accept-encoding forwarding", () => {
     const pairs = buildUpstreamHeaderPairs(req, "openai", ZAI_CRED, IDENTITY);
     const ae = pairs.find(([k]) => k === "accept-encoding");
     expect(ae?.[1]).toBe("gzip, deflate, br");
+  });
+
+  it("strips zstd from the forwarded accept-encoding (2026-10-05 client decode failure)", () => {
+    const req = makeClientReq("{}", { "accept-encoding": "gzip, deflate, br, zstd" });
+    const pairs = buildUpstreamHeaderPairs(req, "openai", ZAI_CRED, IDENTITY);
+    const ae = pairs.find(([k]) => k === "accept-encoding");
+    expect(ae?.[1]).toBe("gzip, deflate, br");
+  });
+
+  it("degrades to identity when zstd was the only advertised coding", () => {
+    const req = makeClientReq("{}", { "accept-encoding": "zstd" });
+    const pairs = buildUpstreamHeaderPairs(req, "openai", ZAI_CRED, IDENTITY);
+    const ae = pairs.find(([k]) => k === "accept-encoding");
+    expect(ae?.[1]).toBe("identity");
+  });
+
+  it("strips a weighted zstd token and keeps the rest", () => {
+    expect(stripZstdAcceptEncoding("zstd;q=0.9, gzip")).toBe("gzip");
+    expect(stripZstdAcceptEncoding("ZSTD")).toBe("identity");
+    expect(stripZstdAcceptEncoding("gzip")).toBe("gzip");
   });
 });
 

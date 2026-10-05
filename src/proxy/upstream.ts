@@ -196,7 +196,11 @@ export function buildUpstreamHeaderPairs(
   // Forward the client's Accept-Encoding so the upstream compresses only when
   // the client can decode it. Hardcoding "gzip" broke clients (e.g. some Tauri
   // builds) that send `accept-encoding: identity` and cannot auto-decompress.
-  const clientAcceptEncoding = clientReq.headers.get("accept-encoding") ?? "gzip";
+  // `zstd` is stripped unconditionally: a real client was observed advertising
+  // it while failing to decode the passthrough stream (live 2026-10-05
+  // "zstd decompress" client error), and nothing needs it — gzip/deflate/br
+  // serve every caller, and server-side paths inflate via the coding net.
+  const clientAcceptEncoding = stripZstdAcceptEncoding(clientReq.headers.get("accept-encoding") ?? "gzip");
   return [
     ["content-type", "application/json"],
     ["accept-encoding", clientAcceptEncoding],
@@ -204,6 +208,17 @@ export function buildUpstreamHeaderPairs(
     ...Object.entries(buildAuthHeaders(format, cred, identity, plan, clientSession)),
     ...Object.entries(extraHeaders ?? {}),
   ];
+}
+
+/** Drop the `zstd` token (with any q-params) from an accept-encoding list;
+ * a list emptied this way degrades to `identity` (no compression), matching
+ * the Tauri-era default. */
+export function stripZstdAcceptEncoding(acceptEncoding: string): string {
+  const kept = acceptEncoding
+    .split(",")
+    .map((token) => token.trim())
+    .filter((token) => token !== "" && token.split(";")[0]!.trim().toLowerCase() !== "zstd");
+  return kept.length > 0 ? kept.join(", ") : "identity";
 }
 
 export function buildUpstreamRequest(
