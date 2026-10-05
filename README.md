@@ -29,7 +29,7 @@ so Claude Code, Codex, Silly Tavern ... can all use your plan quota directly.
 
 ## 🚀 One-minute quickstart
 
-### Step 1: Download the latest `exe` from [GitHub Releases](https://github.com/TriDefender/zcode-api/releases)
+### Step 1: Download the latest `exe` from [GitHub Releases](https://github.com/KilimcininKorOglu/zcode-api/releases)
 
 Yes, that is all — it really is that simple.
 
@@ -140,7 +140,7 @@ curl http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/jso
 
 ## 📱 Mobile (Android)
 
-Download the latest `apk` from [GitHub Releases](https://github.com/TriDefender/zcode-api/releases) and install.
+Download the latest `apk` from [GitHub Releases](https://github.com/KilimcininKorOglu/zcode-api/releases) and install.
 The app mirrors the desktop features: one-tap proxy start, simple setup, live logs, provider & plan switching, light/dark themes.
 
 |                                  Home                                   |                               Logs                                |                                 Settings                                  |                                  Dark theme                                  |
@@ -180,13 +180,13 @@ docker run -d --name zcode-proxy -p 8080:8080 \
   -v "$(pwd)/config.yaml:/data/config.yaml:ro" \
   -v "$(HOME)/.zcode-proxy/credentials.json:/home/bun/.zcode-proxy/credentials.json:ro" \
   -e ZCODE_PROXY_CREDENTIAL_SECRET="a-secret-passphrase-only-you-know" \
-  ghcr.io/tridefender/zcode-proxy:latest
+  ghcr.io/kilimcininkoroglu/zcode-proxy:latest
 ```
 
 ```yaml
 services:
   zcode-proxy:
-    image: ghcr.io/tridefender/zcode-proxy:latest
+    image: ghcr.io/kilimcininkoroglu/zcode-proxy:latest
     ports: ["8080:8080"]
     volumes:
       - ./config.yaml:/data/config.yaml:ro

@@ -489,7 +489,7 @@ def settings_body(s, pal):
     s.text(x, ry2, "Updates", dp(14), pal.onSurfaceVariant)
     s.text(x + dp(40), ry2, "Up to date (v4.7.2)", dp(13), pal.success)
     s.text(x + w, ry2, "Check for updates", dp(13), pal.primary, anchor="end")
-    s.text(x, ry2 + dp(25), "Updates come from GitHub Releases · TriDefender/zcode-api", dp(12), pal.dim)
+    s.text(x, ry2 + dp(25), "Updates come from GitHub Releases · KilimcininKorOglu/zcode-api", dp(12), pal.dim)
     s.text(x, ry2 + dp(25 + 17), "Upstream: Z.AI / Zhipu open platform (OAuth login)", dp(12), pal.dim)
 
 # Light home = running; dark home = replicates the device screenshot state (stopped · Zhipu · logged in · coding-plan)
