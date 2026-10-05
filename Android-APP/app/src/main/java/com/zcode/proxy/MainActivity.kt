@@ -889,7 +889,7 @@ private fun LogsPreviewCard(
             }
         }
         Text(
-            "Tap the card or "View all" (top right) for full logs",
+            "Tap the card or \"View all\" (top right) for full logs",
             fontSize = 12.sp,
             color = dimColor(),
             textAlign = TextAlign.Center,
@@ -1020,7 +1020,7 @@ private fun SettingsScreen(
             )
             SettingRow("Login", if (loggedIn) "Logged in" else "Not logged in")
             Spacer(Modifier.height(4.dp))
-            Text("Switch provider/plan on the Home "Connection" card", fontSize = 12.sp, color = dimColor())
+            Text("Switch provider/plan on the Home \"Connection\" card", fontSize = 12.sp, color = dimColor())
         }
         Spacer(Modifier.height(12.dp))
         CardBlock(title = "About") {
