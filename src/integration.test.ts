@@ -55,7 +55,7 @@ beforeAll(async () => {
     async fetch(req) {
       const url = new URL(req.url);
       const rawBody = await req.text();
-      let parsed: { stream?: boolean; model?: string } = {};
+      let parsed: { stream?: boolean; model?: string; messages?: Array<{ role?: string; content?: unknown }> } = {};
       try { parsed = JSON.parse(rawBody); } catch {}
 
       if (url.pathname.includes("/v1/messages")) {
@@ -102,14 +102,12 @@ beforeAll(async () => {
           }), { status: 200, headers: { "content-type": "application/json" } });
         }
 
+        if (hasToolsDefined && parsed.stream) {
+          return new Response(toolCallStreamSse(), { status: 200, headers: { "content-type": "text/event-stream" } });
+        }
+
         if (parsed.stream) {
-          const sse = [
-            'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_int","model":"glm-4.6","usage":{"input_tokens":33,"output_tokens":1}}}\n\n',
-            'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Integration stream"}}\n\n',
-            'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}\n\n',
-            'event: message_stop\ndata: {"type":"message_stop"}\n\n',
-          ].join("");
-          return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+          return new Response(messagesStreamSse(parsed), { status: 200, headers: { "content-type": "text/event-stream" } });
         }
         return new Response(JSON.stringify({
           id: "msg_int_test",
@@ -234,6 +232,48 @@ function proxyUrl(path: string): string {
 }
 function authHeader(): Record<string, string> {
   return { "Authorization": "Bearer integration-test-key", "Content-Type": "application/json" };
+}
+
+/** SSE body of a streamed tool-call answer: the batch-as-stream equivalent of
+ * the mock's tool-call batch JSON (full message shell, tool_use via
+ * input_json_delta). */
+function toolCallStreamSse(): string {
+  return [
+    'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_tool_call","type":"message","role":"assistant","model":"glm-4.6","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":15,"output_tokens":0}}}\n\n',
+    'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+    'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Calling tool."}}\n\n',
+    'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+    'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_http_1","name":"get_weather","input":{}}}\n\n',
+    'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"city\\": \\"SF\\"}"}}\n\n',
+    'event: content_block_stop\ndata: {"type":"content_block_stop","index":1}\n\n',
+    'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":12}}\n\n',
+    'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+  ].join("");
+}
+
+/** SSE body of a streamed /v1/messages answer. TRUE streaming clients (the
+ * proxy leaves their `stream: true` untouched) are identified by the
+ * "Stream test" marker the streaming tests send and get the distinct usage
+ * fixture; every other streamed request is batch-as-stream and mirrors the
+ * batch JSON's final state. */
+function messagesStreamSse(parsed: { messages?: Array<{ role?: string; content?: unknown }> }): string {
+  const streamingClient = JSON.stringify(parsed.messages ?? []).includes("Stream test");
+  const events = streamingClient
+    ? [
+        'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_int","type":"message","role":"assistant","model":"glm-4.6","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":33,"output_tokens":1}}}\n\n',
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Integration stream"}}\n\n',
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}\n\n',
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+      ]
+    : [
+        'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_int_test","type":"message","role":"assistant","model":"glm-4.6","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0}}}\n\n',
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Integration test response"}}\n\n',
+        'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":8}}\n\n',
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+      ];
+  return events.join("");
 }
 
 describe("integration: OpenAI clients (translated Anthropic upstream)", () => {

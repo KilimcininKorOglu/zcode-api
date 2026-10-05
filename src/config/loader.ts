@@ -12,6 +12,7 @@ const ENV = {
   PROXY_API_KEY: "ZCODE_PROXY_API_KEY",
   PROVIDER: "ZCODE_PROVIDER",
   PLAN_AUTO_SWITCH: "ZCODE_PLAN_AUTO_SWITCH",
+  BATCH_AS_STREAM: "ZCODE_BATCH_AS_STREAM",
   APP_VERSION: "ZCODE_APP_VERSION",
   SOURCE_TITLE: "ZCODE_SOURCE_TITLE",
   REFERER_ORIGIN: "ZCODE_REFERER_ORIGIN",
@@ -39,6 +40,7 @@ const DEFAULTS = {
   PROVIDER: "zai" as const,
   PLAN: "coding-plan" as const,
   PLAN_AUTO_SWITCH: false,
+  BATCH_AS_STREAM: true,
   DEFAULT_MODEL: "glm-4.6",
   LOG_LEVEL: "info" as const,
   ZAI_ANTHROPIC_BASE: "https://api.z.ai/api/anthropic",
@@ -111,6 +113,7 @@ export function loadConfig(path: string): ProxyConfig {
   const provider = resolveProvider(process.env[ENV.PROVIDER] ?? parsed?.provider);
   const plan = resolvePlan(parsed?.plan);
   const planAutoSwitch = resolveBool(process.env[ENV.PLAN_AUTO_SWITCH] ?? parsed?.planAutoSwitch, DEFAULTS.PLAN_AUTO_SWITCH);
+  const batchAsStream = resolveBool(process.env[ENV.BATCH_AS_STREAM] ?? parsed?.batchAsStream, DEFAULTS.BATCH_AS_STREAM);
 
   // --- providers ---
   const zai: ProviderEndpoints = {
@@ -154,6 +157,7 @@ export function loadConfig(path: string): ProxyConfig {
     provider,
     plan,
     planAutoSwitch,
+    batchAsStream,
     providers: { zai, bigmodel },
     defaultModel,
     models,

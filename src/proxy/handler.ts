@@ -47,6 +47,7 @@ import type { OpenAIChatRequest, OpenAIChatResponse, AnthropicMessagesRequest, A
 import { dumpPhase, dumpHeaders, dumpBody, dumpEnabled } from "./dump.js";
 import { clientAcceptsCoding, inflateFormatFor, inflateStreamForCodings, inflateWithCap } from "./inflate.js";
 import { probeFetchDecompressBehavior } from "./decompress-probe.js";
+import { collectAnthropicMessage } from "./sse-collector.js";
 import { buildAnthropicMetadataUserId } from "./trace-headers.js";
 
 /** Options for the proxy handler. */
@@ -162,6 +163,19 @@ export async function proxyRequest(
     if (translated instanceof Response) return translated;
     upstreamBody = translated;
     if (debug) debugLine(reqId, `translated Anthropic→OpenAI (bytes=${upstreamBody?.length ?? 0})`);
+  }
+
+  // Batch requests ride upstream as streams: the gateway kills requests whose
+  // time-to-first-byte sits silent past ~180s — unreachable while streaming,
+  // routine for long non-streaming generations (live 2026-10-05: connection
+  // deaths at exactly 2m59s with no status line at all). Streaming answers
+  // immediately; the SSE is reassembled into the single JSON the client
+  // expects (see the `!meta.stream` SSE branch below). Injected into
+  // `upstreamBody` so the plan-fallback and captcha rebuilds — which
+  // re-transform from it — keep the flag.
+  if (config.batchAsStream !== false && !meta.stream && upstreamBody !== undefined) {
+    upstreamBody = withStreamEnabled(upstreamBody);
+    if (debug) debugLine(reqId, "batch request sent upstream as stream");
   }
 
   // Bundle `E2e` fires for EVERY anthropic-kind request (both plans) — the
@@ -429,6 +443,11 @@ export async function proxyRequest(
       return errorResponse(502, "translation_failed", `upstream returned ${upstreamResp.status}: ${errBody.slice(0, 200)}`);
     }
     if (isSSE && upstreamResp.body) {
+      if (!meta.stream) {
+        // Batch-as-stream (see withStreamEnabled): a batch OpenAI client gets
+        // the reassembled JSON, not a stream it never asked for.
+        return await translatedBatchResponse(clientReq, upstreamResp, meta.model, reqId, format, meta, started, headersAt);
+      }
       const translated = anthropicSseToOpenaiSse(upstreamResp.body, meta.model);
       const [clientBody, statsBody] = translated.tee();
       observeStream(reqId, format, meta, upstreamResp.status, started, statsBody, null);
@@ -453,6 +472,11 @@ export async function proxyRequest(
   }
 
   if (isSSE && upstreamResp.body) {
+    if (!meta.stream) {
+      // Our own batch-as-stream injection (see withStreamEnabled): the client
+      // asked for a single JSON, so reassemble the stream into it.
+      return await collectedBatchResponse(upstreamResp, clientReq, reqId, format, meta, started, headersAt);
+    }
     const [clientBody, statsBody] = upstreamResp.body.tee();
     observeStream(reqId, format, meta, upstreamResp.status, started, statsBody, upstreamResp.headers.get("content-encoding"));
     return passthroughResponse(upstreamResp, clientReq.headers.get("accept-encoding"), clientBody);
@@ -834,6 +858,38 @@ function clientAcceptsGzip(req: Request): boolean {
 }
 
 /** Build a translated batch (non-streaming) OpenAI response. Gzip if client accepts. */
+/**
+ * Shared tail of the three batch-response builders: JSON payload, forwarded
+ * upstream headers, optional gzip for clients that advertise it, and the
+ * request-log row carrying the real token count.
+ */
+function batchJsonResponse(
+  upstream: Response,
+  clientReq: Request,
+  json: string,
+  outputTokens: number,
+  reqId: string,
+  format: Format,
+  meta: RequestMeta,
+  started: number,
+  headersAt: number,
+): Response {
+  const payload = new TextEncoder().encode(json);
+  const respHeaders = new Headers();
+  respHeaders.set("content-type", "application/json");
+  for (const h of forwardedUpstreamHeaders()) {
+    const v = upstream.headers.get(h);
+    if (v) respHeaders.set(h, v);
+  }
+  if (clientAcceptsGzip(clientReq)) {
+    respHeaders.set("content-encoding", "gzip");
+    printRow(reqId, format, meta, upstream.status, started, headersAt, outputTokens, 0, 0);
+    return new Response(gzipSync(payload), { status: upstream.status, headers: respHeaders });
+  }
+  printRow(reqId, format, meta, upstream.status, started, headersAt, outputTokens, 0, 0);
+  return new Response(payload, { status: upstream.status, headers: respHeaders });
+}
+
 async function translatedBatchResponse(
   clientReq: Request,
   upstream: Response,
@@ -844,42 +900,29 @@ async function translatedBatchResponse(
   started: number,
   headersAt: number,
 ): Promise<Response> {
-  const raw = await upstream.text();
   let parsedAnthropic: AnthropicMessagesResponse;
-  try {
-    parsedAnthropic = JSON.parse(raw) as AnthropicMessagesResponse;
-  } catch (err) {
-    printRow(reqId, format, meta, 502, started, headersAt, 0, 0, 0);
-    return errorResponse(502, "translation_failed", `upstream returned non-JSON body: ${(err as Error).message}`);
+  if (isEventStream(upstream) && upstream.body) {
+    try {
+      parsedAnthropic = await collectAnthropicMessage(upstream.body, upstreamCodings(upstream));
+    } catch (err) {
+      printRow(reqId, format, meta, 502, started, headersAt, 0, 0, 0);
+      return errorResponse(502, "upstream_stream_failed", (err as Error).message);
+    }
+  } else {
+    const raw = await upstream.text();
+    try {
+      parsedAnthropic = JSON.parse(raw) as AnthropicMessagesResponse;
+    } catch (err) {
+      printRow(reqId, format, meta, 502, started, headersAt, 0, 0, 0);
+      return errorResponse(502, "translation_failed", `upstream returned non-JSON body: ${(err as Error).message}`);
+    }
   }
   if (!isAnthropicMessagesResponse(parsedAnthropic)) {
     printRow(reqId, format, meta, 502, started, headersAt, 0, 0, 0);
-    return errorResponse(502, "translation_failed", `upstream returned invalid Anthropic message: ${raw.slice(0, 200)}`);
+    return errorResponse(502, "translation_failed", `upstream returned invalid Anthropic message: ${JSON.stringify(parsedAnthropic).slice(0, 200)}`);
   }
   const openaiResp = translateResponseAnthropicToOpenAI(parsedAnthropic, model);
-  const json = JSON.stringify(openaiResp);
-  const payload = new TextEncoder().encode(json);
-
-  const respHeaders = new Headers();
-  respHeaders.set("content-type", "application/json");
-  for (const h of forwardedUpstreamHeaders()) {
-    const v = upstream.headers.get(h);
-    if (v) respHeaders.set(h, v);
-  }
-
-  if (clientAcceptsGzip(clientReq)) {
-    respHeaders.set("content-encoding", "gzip");
-    printRow(reqId, format, meta, upstream.status, started, headersAt, openaiResp.usage?.completion_tokens ?? 0, 0, 0);
-    return new Response(gzipSync(payload), {
-      status: upstream.status,
-      headers: respHeaders,
-    });
-  }
-  printRow(reqId, format, meta, upstream.status, started, headersAt, openaiResp.usage?.completion_tokens ?? 0, 0, 0);
-  return new Response(payload, {
-    status: upstream.status,
-    headers: respHeaders,
-  });
+  return batchJsonResponse(upstream, clientReq, JSON.stringify(openaiResp), openaiResp.usage?.completion_tokens ?? 0, reqId, format, meta, started, headersAt);
 }
 
 async function translatedOpenAIToAnthropicBatchResponse(
@@ -900,29 +943,7 @@ async function translatedOpenAIToAnthropicBatchResponse(
     return errorResponse(502, "translation_failed", `upstream returned non-JSON body: ${(err as Error).message}`);
   }
   const anthropicResp = translateResponseOpenAIToAnthropic(parsedOpenAI);
-  const json = JSON.stringify(anthropicResp);
-  const payload = new TextEncoder().encode(json);
-
-  const respHeaders = new Headers();
-  respHeaders.set("content-type", "application/json");
-  for (const h of forwardedUpstreamHeaders()) {
-    const v = upstream.headers.get(h);
-    if (v) respHeaders.set(h, v);
-  }
-
-  if (clientAcceptsGzip(clientReq)) {
-    respHeaders.set("content-encoding", "gzip");
-    printRow(reqId, format, meta, upstream.status, started, headersAt, anthropicResp.usage.output_tokens, 0, 0);
-    return new Response(gzipSync(payload), {
-      status: upstream.status,
-      headers: respHeaders,
-    });
-  }
-  printRow(reqId, format, meta, upstream.status, started, headersAt, anthropicResp.usage.output_tokens, 0, 0);
-  return new Response(payload, {
-    status: upstream.status,
-    headers: respHeaders,
-  });
+  return batchJsonResponse(upstream, clientReq, JSON.stringify(anthropicResp), anthropicResp.usage.output_tokens, reqId, format, meta, started, headersAt);
 }
 
 function translateAnthropicBody(body: string | undefined): Response | string | undefined {
@@ -989,6 +1010,52 @@ function peekBody(body: string | undefined): RequestMeta {
   } catch {
     return { model: "-", stream: false };
   }
+}
+
+/** Enable `stream: true` on a JSON request body (no-op on parse failure). */
+export function withStreamEnabled(body: string): string {
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    if (parsed.stream === true) return body;
+    parsed.stream = true;
+    return JSON.stringify(parsed);
+  } catch {
+    return body;
+  }
+}
+
+export function isEventStream(resp: Response): boolean {
+  return resp.headers.get("content-type")?.includes("text/event-stream") ?? false;
+}
+
+/** The response's non-identity content-encoding list (for collector inflation). */
+export function upstreamCodings(resp: Response): string[] {
+  return resp.headers.get("content-encoding")?.toLowerCase().split(",").map((c) => c.trim()).filter((c) => c !== "" && c !== "identity") ?? [];
+}
+
+/**
+ * Reassemble a batch-as-stream upstream response into the single Anthropic
+ * JSON the batch client expects (see `withStreamEnabled`). Collect failures
+ * (error events, truncation) surface as 502 with the reason logged.
+ */
+async function collectedBatchResponse(
+  upstream: Response,
+  clientReq: Request,
+  reqId: string,
+  format: Format,
+  meta: RequestMeta,
+  started: number,
+  headersAt: number,
+): Promise<Response> {
+  let message: AnthropicMessagesResponse;
+  try {
+    message = await collectAnthropicMessage(upstream.body!, upstreamCodings(upstream));
+  } catch (err) {
+    console.log(`${reqId} upstream stream collect failed: ${(err as Error).message}`);
+    printRow(reqId, format, meta, 502, started, headersAt, 0, 0, 0);
+    return errorResponse(502, "upstream_stream_failed", (err as Error).message);
+  }
+  return batchJsonResponse(upstream, clientReq, JSON.stringify(message), message.usage?.output_tokens ?? 0, reqId, format, meta, started, headersAt);
 }
 
 let reqCounter = 0;

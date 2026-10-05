@@ -23,7 +23,8 @@ import type { ProxyConfig } from "../config/types.js";
 import type { AuthManager } from "../auth/manager.js";
 import { buildUpstreamRequest, buildUpstreamHeaderPairs, type UpstreamHeaderPair } from "./upstream.js";
 import { isCaptchaChallenged, retryOnCaptchaChallenge } from "./captcha-retry.js";
-import { CLIENT_ABORTED_BEFORE_CONNECT, dispatchWithConnectRetry, retryOnGatewayError } from "./handler.js";
+import { CLIENT_ABORTED_BEFORE_CONNECT, dispatchWithConnectRetry, retryOnGatewayError, withStreamEnabled, isEventStream, upstreamCodings } from "./handler.js";
+import { collectAnthropicMessage } from "./sse-collector.js";
 import type * as CaptchaExports from "./captcha.js";
 
 // Lazy, runtime-gated module load (exception to the static-import rule, same
@@ -187,6 +188,11 @@ export async function handleResponses(
     // anthropicJson stays untouched by the plan-specific transform so the
     // plan-fallback below can re-transform it for the coding plan.
     anthropicJson = JSON.stringify(anthropicReq);
+    // Batch-as-stream (mirrors handler.ts): the gateway kills silent
+    // non-streaming requests past ~180s; stream instead and reassemble.
+    if (opts.config.batchAsStream !== false && !stream) {
+      anthropicJson = withStreamEnabled(anthropicJson);
+    }
     transformedBody = transformRequestBody(anthropicJson, {
       format: "anthropic",
       metadataUserId,
@@ -349,12 +355,20 @@ export async function handleResponses(
         headers: { "content-type": "text/event-stream" },
       });
     } else {
-      const rawAnthropic = await upstreamResp.text();
       let parsedAnthropic: AnthropicMessagesResponse;
-      try {
-        parsedAnthropic = JSON.parse(rawAnthropic) as AnthropicMessagesResponse;
-      } catch (err) {
-        return errorResponse(502, "translation_failed", `upstream returned non-JSON body: ${(err as Error).message}`);
+      if (isEventStream(upstreamResp) && upstreamResp.body) {
+        try {
+          parsedAnthropic = await collectAnthropicMessage(upstreamResp.body, upstreamCodings(upstreamResp));
+        } catch (err) {
+          return errorResponse(502, "upstream_stream_failed", (err as Error).message);
+        }
+      } else {
+        const rawAnthropic = await upstreamResp.text();
+        try {
+          parsedAnthropic = JSON.parse(rawAnthropic) as AnthropicMessagesResponse;
+        } catch (err) {
+          return errorResponse(502, "translation_failed", `upstream returned non-JSON body: ${(err as Error).message}`);
+        }
       }
       const openaiResp = translateResponseAnthropicToOpenAI(parsedAnthropic, req.model);
       upstreamResp = new Response(JSON.stringify(openaiResp), {

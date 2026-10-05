@@ -96,6 +96,22 @@ describe("handleResponses", () => {
     expect(body.output).toBeDefined();
   });
 
+  it("sends batch requests upstream as a stream and reassembles the answer", async () => {
+    let sent = "";
+    const response = await handleResponses(makeReq({ model: "glm-5.2", input: "easy question" }), {
+      config: CONFIG, auth, endpointRouting: null, clientSigning: null,
+      fetchImpl: (async (request: Request) => {
+        sent = await request.text();
+        return new Response(anthropicSse("streamed answer"), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }) as typeof fetch,
+    });
+    expect(response.status).toBe(200);
+    expect(JSON.parse(sent).stream).toBe(true);
+    const body = JSON.parse(await response.text());
+    const text = body.output.find((item: { type: string }) => item.type === "message");
+    expect(JSON.stringify(text.content)).toContain("streamed answer");
+  });
+
   it.each([false, true])("surfaces Anthropic errors without completing or storing the response (partial=%s)", async (partial) => {
     const store = new ResponseStore({ maxEntries: 10, ttlMs: 60000 });
     const prefix = partial ? anthropicSse("partial").split("event: message_delta")[0] : "";

@@ -34,6 +34,7 @@ beforeEach(() => {
   delete process.env.ZCODE_MCP_GATEWAY;
   delete process.env.ZCODE_MCP_GATEWAY_ORIGIN;
   delete process.env.ZCODE_PLAN_AUTO_SWITCH;
+  delete process.env.ZCODE_BATCH_AS_STREAM;
 });
 
 afterEach(() => {
@@ -82,6 +83,41 @@ plan: coding-plan
 planAutoSwitch: true
 `);
     expect(loadConfig(path2).planAutoSwitch).toBe(false);
+  });
+});
+
+describe("batchAsStream", () => {
+  it("defaults to true when the key is absent", () => {
+    const path = writeYaml(`
+server:
+  port: 9090
+provider: zai
+plan: coding-plan
+`);
+    expect(loadConfig(path).batchAsStream).toBe(true);
+  });
+
+  it("loads batchAsStream from YAML", () => {
+    const path = writeYaml(`
+server:
+  port: 9090
+provider: zai
+plan: coding-plan
+batchAsStream: false
+`);
+    expect(loadConfig(path).batchAsStream).toBe(false);
+  });
+
+  it("ZCODE_BATCH_AS_STREAM overrides YAML", () => {
+    process.env.ZCODE_BATCH_AS_STREAM = "0";
+    const path = writeYaml(`
+server:
+  port: 9090
+provider: zai
+plan: coding-plan
+batchAsStream: true
+`);
+    expect(loadConfig(path).batchAsStream).toBe(false);
   });
 });
 

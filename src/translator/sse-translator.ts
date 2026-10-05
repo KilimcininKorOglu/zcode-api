@@ -618,7 +618,8 @@ export function openaiSseToAnthropicSse(
   });
 }
 
-function formatAnthropicSSE(eventType: string, data: unknown): string {
+/** Render one Anthropic SSE frame (shared with the SSE collector's tests). */
+export function formatAnthropicSSE(eventType: string, data: unknown): string {
   return `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 

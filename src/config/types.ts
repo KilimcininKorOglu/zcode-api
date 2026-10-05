@@ -221,6 +221,15 @@ export interface ProxyConfig {
    * sets this; fixtures may omit it.
    */
   planAutoSwitch?: boolean;
+  /**
+   * Send batch (non-streaming) client requests upstream as `stream: true` and
+   * reassemble the SSE into the single JSON the client expects. The upstream
+   * gateway kills requests whose time-to-first-byte sits silent past ~180s,
+   * which only non-streaming generations can hit; streaming starts delivering
+   * bytes immediately. Default true; `loadConfig` always sets it; fixtures may
+   * omit it.
+   */
+  batchAsStream?: boolean;
   /** Per-provider endpoint overrides. */
   providers: {
     zai: ProviderEndpoints;

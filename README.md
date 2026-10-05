@@ -209,6 +209,7 @@ The config file is `config.yaml` in the project root (auto-generated on first la
 | `ZCODE_PROXY_API_KEY`           | none             | Key clients use to access the proxy (unset = no check)                                                                           |
 | `ZCODE_PROVIDER`                | `zai`            | Provider `zai` / `bigmodel`                                                                                                      |
 | `ZCODE_PLAN_AUTO_SWITCH`        | off              | Set to `1`/`true` for the hybrid plan auto-switch (`planAutoSwitch`): prefer the start-plan entitlement while it has balance, fall back to the coding plan when it runs out |
+| `ZCODE_BATCH_AS_STREAM`         | on               | Set to `0`/`false` to disable `batchAsStream`: batch (non-streaming) requests are sent upstream as streams and reassembled into one JSON, because the upstream gateway kills silent non-streaming requests past ~180s (symptom: 502 after exactly ~3 minutes) |
 | `ZCODE_PROXY_CONFIG`            | `config.yaml`    | Config file path                                                                                                                 |
 | `ZCODE_PROXY_CREDENTIAL_SECRET` | machine-specific | Encryption seed for login credentials (pin it for cross-machine moves / Docker)                                                  |
 | `ZCODE_LOG_FORMAT`              | desktop table    | Set to `compact` for single-line logs (narrow screens)                                                                           |
