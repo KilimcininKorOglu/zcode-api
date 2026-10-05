@@ -25,9 +25,9 @@
 import { existsSync } from "node:fs";
 
 /** Newest stable release (the API excludes prereleases). */
-export const LATEST_RELEASE_API = "https://api.github.com/repos/TriDefender/zcode-api/releases/latest";
+export const LATEST_RELEASE_API = "https://api.github.com/repos/KilimcininKorOglu/zcode-api/releases/latest";
 /** Human-facing releases page, used for the "how to update" hint. */
-export const RELEASES_PAGE = "https://github.com/TriDefender/zcode-api/releases";
+export const RELEASES_PAGE = "https://github.com/KilimcininKorOglu/zcode-api/releases";
 /**
  * GitHub answers 403 to requests without a User-Agent — the Android checker
  * carries an explicit one for exactly this reason.

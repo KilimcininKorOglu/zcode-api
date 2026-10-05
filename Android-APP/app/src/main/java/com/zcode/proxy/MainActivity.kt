@@ -1055,7 +1055,7 @@ private fun SettingsScreen(
                 }
             }
             Spacer(Modifier.height(4.dp))
-            Text("Updates come from GitHub Releases · TriDefender/zcode-api", fontSize = 12.sp, color = dimColor())
+            Text("Updates come from GitHub Releases · KilimcininKorOglu/zcode-api", fontSize = 12.sp, color = dimColor())
             Text("Upstream: Z.AI / Zhipu open platform (OAuth login)", fontSize = 12.sp, color = dimColor())
         }
     }
