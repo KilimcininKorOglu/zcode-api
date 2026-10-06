@@ -350,35 +350,41 @@ describe("poll line formatting", () => {
     expect(readableReset(undefined, now)).toBeUndefined();
   });
 
-  it("describes a watched window with grouped numbers and a reset countdown", () => {
-    expect(describeCodingWindow({ type: "TIME_LIMIT", remaining: 71, nextResetTime: now + 3.1 * 3600_000 }, now)).toBe(
-      "71 left, resets in 3h 6m",
+  it("describes windows percent-first in the requested shape", () => {
+    expect(describeCodingWindow({ type: "TOKENS_LIMIT", percentage: 30, nextResetTime: now + 3.1 * 3600_000 }, "used", now)).toBe(
+      "%30 used, resets in 3h 6m",
     );
+    expect(describeCodingWindow({ type: "TIME_LIMIT", percentage: 29, nextResetTime: now + 3.1 * 3600_000 }, "left", now)).toBe(
+      "%71 left, resets in 3h 6m",
+    );
+    // No percentage: used/total arithmetic, then a plain remaining count.
+    expect(describeCodingWindow({ type: "TIME_LIMIT", used: 12, total: 120 }, "left", now)).toBe("%90 left");
+    // Junk total (1 with remaining 71) is rejected; plain remaining survives.
+    expect(describeCodingWindow({ type: "TIME_LIMIT", remaining: 71, total: 1 }, "left", now)).toBe("71 left");
+    expect(describeCodingWindow({ type: "TOKENS_LIMIT" }, "used", now)).toBe("no numbers");
   });
 
-  it("shows X/Y when the total is self-consistent, the remaining share when not", () => {
-    expect(describeCodingWindow({ type: "TOKENS_LIMIT", remaining: 71_234_567, total: 250_000_000 }, now)).toBe(
-      "71.234.567 / 250.000.000 left",
-    );
-    // Live junk total (1 with remaining 71): stay with the plain remaining.
-    expect(describeCodingWindow({ type: "TIME_LIMIT", remaining: 71, total: 1 }, now)).toBe("71 left");
-    // No remaining: upstream `percentage` is the USED share (TUI-verified live).
-    expect(describeCodingWindow({ type: "TOKENS_LIMIT", percentage: 83 }, now)).toBe("17% left");
-  });
-
-  it("renders the full probe line and stays silent when nothing was observed", () => {
+  it("renders the full probe line in the fixed window order and stays silent when nothing was observed", () => {
     const line = formatPollLine(
       "coding-plan",
-      { ok: true, balances: [] },
-      { ok: true, level: "lite", limits: [{ type: "TIME_LIMIT", remaining: 71, nextResetTime: now + 3 * 3600_000 }] },
-      ["TIME_LIMIT", "WEEK_LIMIT"],
+      { ok: true, balances: [{ showName: "GLM-5.3-Flash", remainingUnits: 55543454, totalUnits: 100000000, usedUnits: 44456546 }] },
+      {
+        ok: true,
+        level: "lite",
+        limits: [
+          { type: "TOKENS_LIMIT", percentage: 30, nextResetTime: now + 3 * 3600_000 },
+          { type: "TIME_LIMIT", percentage: 29, nextResetTime: now + 18 * 86_400_000 + 2 * 3600_000 },
+        ],
+      },
       now,
     );
+    // TOKENS_LIMIT = 5h Window (used share), TIME_LIMIT = Monthly Limit
+    // (remaining share); WEEK_LIMIT absent upstream → absent from the line.
     expect(line).toBe(
-      "plan auto-switch: serving coding-plan | TIME_LIMIT: 71 left, resets in 3h | WEEK_LIMIT: not reported | start-plan: balance empty",
+      "plan auto-switch: serving coding-plan | 5h Window: %30 used, resets in 3h | Monthly Limit: %71 left, resets in 18d 2h | Start Plan Tokens: 55.543.454 / 100.000.000 tokens left",
     );
-    expect(formatPollLine("coding-plan", null, null, ["TIME_LIMIT"], now)).toBeNull();
-    expect(formatPollLine("coding-plan", { ok: false, balances: [], error: "balance: 3001 parameter error" }, null, ["TIME_LIMIT"], now)).toBeNull();
+    expect(formatPollLine("coding-plan", null, null, now)).toBeNull();
+    expect(formatPollLine("coding-plan", { ok: false, balances: [], error: "balance: 3001 parameter error" }, null, now)).toBeNull();
   });
 });
 

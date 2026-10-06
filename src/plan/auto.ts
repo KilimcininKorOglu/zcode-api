@@ -317,7 +317,6 @@ export function startPlanAutoWatcher(config: ProxyConfig, deps: PlanAutoWatcherD
         activePlan(config),
         start,
         coding !== null && coding.ok ? coding : null,
-        planWatchedLimitsOf(config, "coding-plan"),
         Date.now(),
       );
       if (line) console.log(line);
@@ -378,23 +377,36 @@ export function readableReset(next: number | undefined, nowMs: number): string |
 }
 
 /**
- * One watched coding window, human-readable: remaining (X/Y when the total is
- * self-consistent — upstream `total` is junk on live rows), falling back to
- * the remaining share (upstream `percentage` is the USED share), then the
- * reset countdown, e.g. `71 left, resets in 3h 10m`.
+ * The used share of one window in percent (0-100), or undefined when no
+ * field produces a sane value: upstream `percentage` first, then used/total,
+ * then remaining/total — junk totals (live: total 1 with remaining 71) are
+ * rejected by the 0-100 gate instead of yielding negative percents.
  */
-export function describeCodingWindow(row: QuotaCodingLimit, nowMs: number): string {
+function pctUsedOf(row: QuotaCodingLimit): number | undefined {
+  const raw = row.percentage !== undefined && row.percentage >= 0 && row.percentage <= 100
+    ? row.percentage
+    : typeof row.used === "number" && typeof row.total === "number" && row.total > 0
+      ? (row.used / row.total) * 100
+      : typeof row.remaining === "number" && typeof row.total === "number" && row.total > 0
+        ? ((row.total - row.remaining) / row.total) * 100
+        : NaN;
+  return Number.isFinite(raw) && raw >= 0 && raw <= 100 ? Math.round(raw) : undefined;
+}
+
+/**
+ * One watched coding window, human-readable, percent-first (`%N`): `kind:
+ * "used"` shows the consumed share (TOKENS_LIMIT), `kind: "left"` the
+ * remaining share (TIME/WEEK_LIMIT). Without any sane percent it falls back
+ * to a plain remaining count. Then the reset countdown, e.g.
+ * `%71 left, resets in 3h 10m`.
+ */
+export function describeCodingWindow(row: QuotaCodingLimit, kind: "used" | "left", nowMs: number): string {
+  const pctUsed = pctUsedOf(row);
   const bits: string[] = [];
-  if (typeof row.remaining === "number") {
-    bits.push(
-      row.total !== undefined && row.total > 0 && row.remaining <= row.total
-        ? `${grouped(row.remaining)} / ${grouped(row.total)} left`
-        : `${grouped(row.remaining)} left`,
-    );
-  } else if (row.percentage !== undefined && row.percentage >= 0 && row.percentage <= 100) {
-    bits.push(`${Math.round(100 - row.percentage)}% left`);
-  } else if (typeof row.used === "number" && typeof row.total === "number" && row.total > 0) {
-    bits.push(`${grouped(row.total - row.used)} left`);
+  if (pctUsed !== undefined) {
+    bits.push(kind === "used" ? `%${pctUsed} used` : `%${100 - pctUsed} left`);
+  } else if (typeof row.remaining === "number") {
+    bits.push(`${grouped(row.remaining)} left`);
   } else {
     bits.push("no numbers");
   }
@@ -403,37 +415,51 @@ export function describeCodingWindow(row: QuotaCodingLimit, nowMs: number): stri
   return bits.join(", ");
 }
 
-/** The coding half of the poll line: watched windows, or why the plane is dark. */
-function codingPart(coding: CodingPlanUsage | null, watched: string[], nowMs: number): string {
+/** Fixed display order, human labels and percent direction for the monitor-plane windows. */
+const WINDOW_LABELS: ReadonlyArray<{ type: string; label: string; kind: "used" | "left" }> = [
+  { type: "TOKENS_LIMIT", label: "5h Window", kind: "used" },
+  { type: "WEEK_LIMIT", label: "Weekly Limit", kind: "left" },
+  { type: "TIME_LIMIT", label: "Monthly Limit", kind: "left" },
+];
+
+/**
+ * The coding half of the poll line: the windows upstream actually reports,
+ * in fixed order with human labels (a window upstream does not send — e.g.
+ * WEEK_LIMIT today — is simply absent from the line), or why the plane is
+ * dark.
+ */
+function codingPart(coding: CodingPlanUsage | null, nowMs: number): string {
   if (!coding?.ok) return `coding: ${coding === null ? "no data" : coding.error ?? "unavailable"}`;
-  return watched.map((type) => {
+  return WINDOW_LABELS.flatMap(({ type, label, kind }) => {
     const row = coding.limits.find((l) => l.type === type);
-    return `${type}: ${row ? describeCodingWindow(row, nowMs) : "not reported"}`;
+    return row ? [`${label}: ${describeCodingWindow(row, kind, nowMs)}`] : [];
   }).join(" | ");
 }
 
-/** The start-plan half of the poll line. */
+/** The start-plan half of the poll line: the token bucket, human-readable. */
 function startPart(start: StartPlanBalance | null): string {
   if (start === null) return "no data";
   if (!start.ok) return start.error ?? "probe failed";
-  return hasUsableBalance(start.balances) ? "balance usable" : "balance empty";
+  const bucket = start.balances.find((b) => b.remainingUnits > 0) ?? start.balances[0];
+  if (!bucket) return "no buckets";
+  return `${grouped(bucket.remainingUnits)} / ${grouped(bucket.totalUnits)} tokens left`;
 }
 
 /**
  * The operator-facing poll line (one per successful probe, both planes):
- * `plan auto-switch: serving coding-plan | TIME_LIMIT: 71 left, resets in 3h
- * 10m | WEEK_LIMIT: not reported | start-plan: balance empty`. Null when
- * neither plane returned data (login pending) — silence there, not spam.
+ * `plan auto-switch: serving coding-plan | 5h Window: %30 used, resets in 3h
+ * 5m | Monthly Limit: %71 left, resets in 18d 20h | Start Plan Tokens:
+ * 55.543.454 / 100.000.000 tokens left`. Null when neither plane returned
+ * data (login pending) — silence there, not spam.
  */
 export function formatPollLine(
   serving: PlanTier,
   start: StartPlanBalance | null,
   coding: CodingPlanUsage | null,
-  watched: string[],
   nowMs: number,
 ): string | null {
   if (coding === null && (start === null || !start.ok)) return null;
-  return `plan auto-switch: serving ${serving} | ${codingPart(coding, watched, nowMs)} | start-plan: ${startPart(start)}`;
+  return `plan auto-switch: serving ${serving} | ${codingPart(coding, nowMs)} | Start Plan Tokens: ${startPart(start)}`;
 }
 
 /** Restore pristine module state in tests. */
