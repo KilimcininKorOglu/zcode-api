@@ -48,9 +48,9 @@ planAutoSwitch: false
 #   start-plan:
 #     limits: ["BALANCE"]
 
-# Auto-switch poll interval in seconds (default 600; a change applies live).
+# Auto-switch poll interval in seconds (default 60; a change applies live).
 # Env override: ZCODE_PLAN_POLL_INTERVAL_SEC
-# planPollIntervalSec: 600
+# planPollIntervalSec: 60
 
 providers:
   zai:
@@ -203,7 +203,7 @@ claim:
   auto: true
   origin: "https://zcode.z.ai"
   # Preview poll cadence in seconds (5 min default).
-  pollIntervalSec: 300
+  pollIntervalSec: 600
   # Backoff after failed attempts (10 min default); quota_exhausted /
   # already_claimed back off to the server-provided next window instead.
   cooldownMs: 600000

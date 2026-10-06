@@ -150,7 +150,7 @@ claim:
   auto: true
   origin: "https://zcode.z.ai"
   # Preview poll cadence in seconds (5 min default).
-  pollIntervalSec: 300
+  pollIntervalSec: 600
   # Backoff after failed attempts (10 min default); quota_exhausted /
   # already_claimed back off to the server-provided next window instead.
   cooldownMs: 600000
