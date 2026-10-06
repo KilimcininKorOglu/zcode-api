@@ -67,7 +67,7 @@ import {
   type ResponsesOutputItem,
 } from "../translator/responses-types.js";
 import { ResponseStore, type StoredResponse } from "../responses/store.js";
-import { errorResponse, readBody, InflatedBodyTooLargeError } from "./handler.js";
+import { errorResponse, readBody, InflatedBodyTooLargeError, unreachableMessage } from "./handler.js";
 import { activePlan, planPriorityOf, retryOnPlanExhausted, shouldFallbackPlan, sniffStartPlanRejection, type PlanTier } from "../plan/auto.js";
 
 export interface ResponsesHandlerOptions {
@@ -284,7 +284,7 @@ export async function handleResponses(
       console.log(`[responses] client gone before upstream connect, not retrying`);
       appendErrorLog({ kind: "client_gone_before_connect", reqId: "[responses]", ...traceFields });
     }
-    return errorResponse(502, "upstream_unreachable", (err as Error).message);
+    return errorResponse(502, "upstream_unreachable", unreachableMessage(err));
   }
 
   // Hybrid plan auto-switch (mirrors handler.ts, only while planAutoSwitch
@@ -362,7 +362,7 @@ export async function handleResponses(
         mapError: (err, phase) =>
           phase === "solver"
             ? errorResponse(503, "captcha_solver_failed", err.message)
-            : errorResponse(502, "upstream_unreachable", err.message),
+            : errorResponse(502, "upstream_unreachable", unreachableMessage(err)),
       });
       if (!outcome.ok) return outcome.resp;
       upstreamResp = outcome.resp;

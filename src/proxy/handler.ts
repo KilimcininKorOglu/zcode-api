@@ -320,7 +320,7 @@ export async function proxyRequest(
         isAborted: () => clientReq.signal.aborted,
         onRetry: (attempt, err) => {
           if (debug) debugError(reqId, "upstream_connect_retry", `attempt ${attempt}/${MAX_CONNECT_ATTEMPTS - 1} failed (${err.message}), retrying in ${500 * attempt}ms`);
-          console.log(`${reqId} upstream connect failed (${err.message}), retry ${attempt + 1}/${MAX_CONNECT_ATTEMPTS} in ${500 * attempt}ms`);
+          console.log(`${reqId} upstream connect failed (${(err as Error).message || "no detail"}), retry ${attempt + 1}/${MAX_CONNECT_ATTEMPTS} in ${500 * attempt}ms`);
           appendErrorLog({ kind: "upstream_connect_retry", reqId, attempt, error: err.message, ...clientTraceFields(clientReq) });
         },
       },
@@ -340,7 +340,7 @@ export async function proxyRequest(
       appendErrorLog({ kind: "client_gone_before_connect", reqId, ...clientTraceFields(clientReq) });
     }
     printRow(reqId, format, meta, 502, started, Date.now(), 0, 0, 0);
-    return errorResponse(502, "upstream_unreachable", (err as Error).message);
+    return errorResponse(502, "upstream_unreachable", unreachableMessage(err));
   }
   const headersAt = Date.now();
   meta.upstreamRequestId = upstreamRequestId(upstreamResp);
@@ -462,7 +462,7 @@ export async function proxyRequest(
         }
         if (debug) debugError(reqId, "upstream_unreachable", err.message);
         printRow(reqId, format, meta, 502, started, Date.now(), 0, 0, 0);
-        return errorResponse(502, "upstream_unreachable", err.message);
+        return errorResponse(502, "upstream_unreachable", unreachableMessage(err));
       },
     });
     if (!outcome.ok) return outcome.resp;
@@ -714,7 +714,7 @@ async function sendUpstreamRequest(
   if (abortSignal) fetchOpts.signal = abortSignal;
   const resp = await fetchImpl(upstreamReq, fetchOpts);
   // Passthrough on a runtime whose fetch auto-decompresses (measured once at
-  // first use by decompress-probe.ts: undici in the Android bundle decodes
+  // first use by decompress-probe.ts: undici (Node fetch) decodes
   // gzip/deflate/br and keeps the stale labels, Bun's decompress:false does
   // not): the body arrives inflated while its headers still claim compression.
   // Drop the stale labels so the body/header pairing downstream stays
@@ -856,6 +856,16 @@ function passthroughResponse(
     statusText: upstream.statusText,
     headers,
   });
+}
+
+/**
+ * Client-facing detail for a failed upstream connect. The raw error message
+ * is often EMPTY (a bare connect reset), which left the client a useless
+ * `{"message":""}` — always name the problem instead.
+ */
+export function unreachableMessage(err: unknown): string {
+  const detail = (err as Error)?.message?.trim();
+  return detail ? `can't connect to z.ai (${detail})` : "can't connect to z.ai";
 }
 
 /** Build a JSON error response. */
