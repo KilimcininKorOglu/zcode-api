@@ -65,13 +65,17 @@ export function activePlan(config: ProxyConfig): PlanTier {
  * (bad JWT / no balance). 502/504: the start-plan gateway itself is failing
  * (LB timeout / dead backend — observed live 2026-10-04 as sustained
  * 504@60s/502@30s stretches), and coding-plan serves the request while the
- * cooldown keeps traffic off the sick gateway. 429 and other 5xx stay put:
- * they are rate/load signals, not plan failures.
+ * cooldown keeps traffic off the sick gateway. 429: on THIS gateway it is the
+ * exhaustion signal, not a load signal — observed live 2026-10-05 as seven
+ * consecutive 429s with no cooldown escape, because the auto-claim scheduler
+ * kept refreshing trial balances and the watcher read "balance available" on
+ * every poll while every request was rejected. Other 5xx stay put: they are
+ * generic load/failure signals, not plan failures.
  */
 export function shouldFallbackPlan(status: number, plan: PlanTier, config: ProxyConfig): boolean {
   if (config.planAutoSwitch !== true) return false;
   if (plan !== "start-plan") return false;
-  return status === 401 || status === 402 || status === 403 || status === 502 || status === 504;
+  return status === 401 || status === 402 || status === 403 || status === 429 || status === 502 || status === 504;
 }
 
 /** JSON error envelopes larger than this are treated as real payloads, not errors. */

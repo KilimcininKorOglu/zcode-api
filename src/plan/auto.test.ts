@@ -78,12 +78,14 @@ describe("shouldFallbackPlan", () => {
     expect(shouldFallbackPlan(402, "start-plan", cfg)).toBe(false);
   });
 
-  it("falls back only for start-plan auth/quota rejections", () => {
+  it("falls back for start-plan auth/quota rejections and exhaustion 429s", () => {
     const cfg = makeConfig();
     expect(shouldFallbackPlan(401, "start-plan", cfg)).toBe(true);
     expect(shouldFallbackPlan(402, "start-plan", cfg)).toBe(true);
     expect(shouldFallbackPlan(403, "start-plan", cfg)).toBe(true);
-    expect(shouldFallbackPlan(429, "start-plan", cfg)).toBe(false);
+    // A start-plan 429 is plan exhaustion, not load: the auto-claim loop kept
+    // refreshing balances while every request was rejected (live 2026-10-05).
+    expect(shouldFallbackPlan(429, "start-plan", cfg)).toBe(true);
     expect(shouldFallbackPlan(500, "start-plan", cfg)).toBe(false);
     expect(shouldFallbackPlan(402, "coding-plan", cfg)).toBe(false);
   });
