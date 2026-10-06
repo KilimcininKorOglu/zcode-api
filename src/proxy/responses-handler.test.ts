@@ -1,6 +1,7 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, beforeEach } from "bun:test";
 import { handleResponses } from "./responses-handler.js";
 import { ResponseStore } from "../responses/store.js";
+import { __resetPlanAutoStateForTests } from "../plan/auto.js";
 import type { ProxyConfig } from "../config/types.js";
 import type * as CaptchaExports from "./captcha.js";
 
@@ -11,6 +12,7 @@ const CONFIG: ProxyConfig = {
   auth: {},
   provider: "zai",
   plan: "coding-plan",
+  planAutoSwitch: false,
   providers: {
     zai: { anthropicBase: "https://api.z.ai/api/anthropic", openaiBase: "https://api.z.ai/api/coding/paas/v4" },
     bigmodel: { anthropicBase: "https://open.bigmodel.cn/api/anthropic", openaiBase: "https://open.bigmodel.cn/api/coding/paas/v4" },
@@ -29,6 +31,12 @@ const CONFIG: ProxyConfig = {
 };
 
 const auth = { getCredential: async () => ({ apiKey: "testkey.testsecret", userId: "u1" }) } as unknown as import("../auth/manager.js").AuthManager;
+
+// The plan auto-switch state is module-global: a fallback in one test must
+// not pin the effective plan for the next one.
+beforeEach(() => {
+  __resetPlanAutoStateForTests();
+});
 
 function chatUpstream(body: string, status = 200): typeof fetch {
   return (async (): Promise<Response> => new Response(body, { status, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
@@ -261,7 +269,7 @@ describe("handleResponses", () => {
 // HTTP 400 {"code":3007,"msg":"captcha verify failed"} while the OpenAI and
 // Anthropic routes worked.
 describe("handleResponses captcha (start-plan)", () => {
-  const START_PLAN: ProxyConfig = { ...CONFIG, plan: "start-plan", provider: "bigmodel" };
+  const START_PLAN: ProxyConfig = { ...CONFIG, plan: "start-plan", planAutoSwitch: true, provider: "bigmodel" };
   const PARAM_HEADER = "x-aliyun-captcha-verify-param";
   const REGION_HEADER = "x-aliyun-captcha-verify-region";
 
@@ -361,6 +369,39 @@ describe("handleResponses captcha (start-plan)", () => {
     expect(body.error.message).toContain("3007");
   });
 
+  it("answers a clean 429 when the coding 429 fallback also gets a quota envelope", async () => {
+    // Mirror of the handler.ts test: with every plan exhausted the coding 429
+    // fallback lands on the start-plan gateway, which answers 200 + quota
+    // envelope; that fake 200 must become a clean 429, not reach the client.
+    const config: ProxyConfig = {
+      ...CONFIG,
+      plan: "coding-plan",
+      planAutoSwitch: true,
+      planPriority: ["coding-plan", "start-plan"],
+    };
+    const urls: string[] = [];
+    const fetchImpl = (async (request: Request): Promise<Response> => {
+      urls.push(request.url);
+      if (request.url.includes("/api/v1/zcode-plan/")) {
+        return new Response('{"code":1005,"msg":"exceed quota limit"}', {
+          status: 200,
+          headers: { "content-type": "application/json; charset=utf-8" },
+        });
+      }
+      return new Response("rate limited", { status: 429 });
+    }) as unknown as typeof fetch;
+
+    const resp = await handleResponses(makeReq({ model: "glm-5.2", input: "hi" }), {
+      config, auth, fetchImpl, endpointRouting: null, clientSigning: null,
+    });
+    expect(urls).toHaveLength(2);
+    expect(urls[0]).toContain("https://api.z.ai/api/anthropic");
+    expect(urls[1]).toContain("/api/v1/zcode-plan/");
+    expect(resp.status).toBe(429);
+    const body = (await resp.json()) as { error?: { type?: string } };
+    expect(body.error?.type).toBe("plan_quota_exhausted");
+  });
+
   it("does not touch captcha on coding-plan", async () => {
     const seen: (string | null)[] = [];
     const fetchImpl = (async (request: Request): Promise<Response> => {
@@ -378,7 +419,7 @@ describe("handleResponses captcha (start-plan)", () => {
   });
 
   it("injects the device/session metadata.user_id blob on BOTH plans (bundle E2e is plan-agnostic)", async () => {
-    const START_PLAN: ProxyConfig = { ...CONFIG, plan: "start-plan", provider: "bigmodel" };
+    const START_PLAN: ProxyConfig = { ...CONFIG, plan: "start-plan", planAutoSwitch: true, provider: "bigmodel" };
     let codingBody = "";
     let startBody = "";
     const codingFetch = (async (request: Request): Promise<Response> => {
@@ -457,7 +498,7 @@ describe("handleResponses resilience (CL-08)", () => {
   });
 
   it("captcha retry dispatch failure → 502 upstream_unreachable (not mislabeled 503)", async () => {
-    const START_PLAN: ProxyConfig = { ...CONFIG, plan: "start-plan", provider: "bigmodel" };
+    const START_PLAN: ProxyConfig = { ...CONFIG, plan: "start-plan", planAutoSwitch: true, provider: "bigmodel" };
     let calls = 0;
     const fetchImpl = (async (): Promise<Response> => {
       calls += 1;
@@ -488,7 +529,7 @@ describe("handleResponses resilience (CL-08)", () => {
   });
 
   it("captcha solver failure → 503 captcha_solver_failed", async () => {
-    const START_PLAN: ProxyConfig = { ...CONFIG, plan: "start-plan", provider: "bigmodel" };
+    const START_PLAN: ProxyConfig = { ...CONFIG, plan: "start-plan", planAutoSwitch: true, provider: "bigmodel" };
     const fetchImpl = (async (): Promise<Response> =>
       new Response(JSON.stringify({ code: 3007, msg: "captcha verify failed" }), {
         status: 400, headers: { "content-type": "application/json" },

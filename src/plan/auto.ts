@@ -32,8 +32,10 @@ import {
 import {
   fetchCodingPlanUsage,
   fetchStartPlanBalance,
+  type CodingPlanUsage,
   type QuotaBalanceEntry,
   type QuotaCodingLimit,
+  type StartPlanBalance,
 } from "../server/routes-quota.js";
 
 /** Re-exported for the handlers importing the plan seam from here. */
@@ -100,11 +102,9 @@ export function activePlan(config: ProxyConfig): PlanTier {
 
 /**
  * True when the upstream status on a plan request should trigger the one-shot
- * next-plan fallback. Runs regardless of `planAutoSwitch`: the fallback
- * repairs a rejected plan within one request, whether the plan was picked by
- * the watcher or by hand (live 2026-10-06: flag off, start-plan hand-pinned,
- * gateway answered 200 + {"code":1005,"msg":"exceed quota limit"} and the
- * envelope passed through until the operator restarted).
+ * next-plan fallback. Only consulted while `planAutoSwitch` is on — the
+ * fallback is part of the auto-switch; with the flag off, plan selection is
+ * entirely the operator's config and failures pass through untouched.
  *
  * start-plan: 401/402/403 = the gateway rejected the plan (bad JWT / no
  * balance); 502/504 = the start-plan gateway itself is failing (observed live
@@ -179,9 +179,10 @@ export interface PlanFallbackOutcome {
  * when the serving plan rejected the request (error status OR a 200 JSON
  * error envelope, both detected by the caller), run the caller's next-plan
  * rebuild + dispatch ONCE with the target plan and record the cooldown first
- * so concurrent requests skip the broken plan. Runs regardless of
- * `planAutoSwitch`. `rebuildAndDispatch` errors propagate to the caller,
- * which maps them onto its own 502 path.
+ * so concurrent requests skip the broken plan. Runs only while
+ * `planAutoSwitch` is on (the caller guards it) — with the flag off, plan
+ * selection is entirely the operator's config. `rebuildAndDispatch` errors
+ * propagate to the caller, which maps them onto its own 502 path.
  */
 export async function retryOnPlanExhausted(args: {
   rejected: boolean;
@@ -309,7 +310,18 @@ export function startPlanAutoWatcher(config: ProxyConfig, deps: PlanAutoWatcherD
         : codingUsable(coding.limits, planWatchedLimitsOf(config, "coding-plan"));
 
       state.lastError = errors.length > 0 ? errors.join("; ") : null;
-      applyDecision(config, { "start-plan": startUsable, "coding-plan": codingUsableNow });
+      const usable: Record<PlanTier, boolean> = { "start-plan": startUsable, "coding-plan": codingUsableNow };
+      // One readable probe line per tick that saw real data (visible quota
+      // drift in the logs; silence when nothing was observed).
+      const line = formatPollLine(
+        activePlan(config),
+        start,
+        coding !== null && coding.ok ? coding : null,
+        planWatchedLimitsOf(config, "coding-plan"),
+        Date.now(),
+      );
+      if (line) console.log(line);
+      applyDecision(config, usable);
     },
   };
 
@@ -337,6 +349,91 @@ function applyDecision(config: ProxyConfig, usable: Record<PlanTier, boolean>): 
 function decisionReason(usable: Record<PlanTier, boolean>): string {
   const bits = (["start-plan", "coding-plan"] as PlanTier[]).map((p) => `${p} ${usable[p] ? "usable" : "empty"}`);
   return `poll: ${bits.join(", ")}`;
+}
+
+/** `100.568.323` — tr-TR dotted grouping, the readable quota format. */
+const GROUPED = new Intl.NumberFormat("tr-TR");
+
+/** Grouped number formatting for the poll log line. */
+function grouped(n: number): string {
+  return GROUPED.format(n);
+}
+
+/** `3h 10m`, `45m`, `6d 2h` — human duration for the poll log line. */
+export function formatDuration(ms: number): string {
+  const totalMin = Math.round(ms / 60_000);
+  const d = Math.floor(totalMin / 1440);
+  const h = Math.floor((totalMin % 1440) / 60);
+  const m = totalMin % 60;
+  if (d > 0) return h > 0 ? `${d}d ${h}h` : `${d}d`;
+  if (h > 0) return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  return `${m}m`;
+}
+
+/** `in 3h 10m` / `overdue` from an upstream epoch (seconds or ms, both seen in the wild). */
+export function readableReset(next: number | undefined, nowMs: number): string | undefined {
+  if (next === undefined) return undefined;
+  const ms = next > EPOCH_MS_THRESHOLD ? next : next * 1000;
+  return ms - nowMs <= 0 ? "overdue" : `in ${formatDuration(ms - nowMs)}`;
+}
+
+/**
+ * One watched coding window, human-readable: remaining (X/Y when the total is
+ * self-consistent — upstream `total` is junk on live rows), falling back to
+ * the remaining share (upstream `percentage` is the USED share), then the
+ * reset countdown, e.g. `71 left, resets in 3h 10m`.
+ */
+export function describeCodingWindow(row: QuotaCodingLimit, nowMs: number): string {
+  const bits: string[] = [];
+  if (typeof row.remaining === "number") {
+    bits.push(
+      row.total !== undefined && row.total > 0 && row.remaining <= row.total
+        ? `${grouped(row.remaining)} / ${grouped(row.total)} left`
+        : `${grouped(row.remaining)} left`,
+    );
+  } else if (row.percentage !== undefined && row.percentage >= 0 && row.percentage <= 100) {
+    bits.push(`${Math.round(100 - row.percentage)}% left`);
+  } else if (typeof row.used === "number" && typeof row.total === "number" && row.total > 0) {
+    bits.push(`${grouped(row.total - row.used)} left`);
+  } else {
+    bits.push("no numbers");
+  }
+  const reset = readableReset(row.nextResetTime, nowMs);
+  if (reset) bits.push(`resets ${reset}`);
+  return bits.join(", ");
+}
+
+/** The coding half of the poll line: watched windows, or why the plane is dark. */
+function codingPart(coding: CodingPlanUsage | null, watched: string[], nowMs: number): string {
+  if (!coding?.ok) return `coding: ${coding === null ? "no data" : coding.error ?? "unavailable"}`;
+  return watched.map((type) => {
+    const row = coding.limits.find((l) => l.type === type);
+    return `${type}: ${row ? describeCodingWindow(row, nowMs) : "not reported"}`;
+  }).join(" | ");
+}
+
+/** The start-plan half of the poll line. */
+function startPart(start: StartPlanBalance | null): string {
+  if (start === null) return "no data";
+  if (!start.ok) return start.error ?? "probe failed";
+  return hasUsableBalance(start.balances) ? "balance usable" : "balance empty";
+}
+
+/**
+ * The operator-facing poll line (one per successful probe, both planes):
+ * `plan auto-switch: serving coding-plan | TIME_LIMIT: 71 left, resets in 3h
+ * 10m | WEEK_LIMIT: not reported | start-plan: balance empty`. Null when
+ * neither plane returned data (login pending) — silence there, not spam.
+ */
+export function formatPollLine(
+  serving: PlanTier,
+  start: StartPlanBalance | null,
+  coding: CodingPlanUsage | null,
+  watched: string[],
+  nowMs: number,
+): string | null {
+  if (coding === null && (start === null || !start.ok)) return null;
+  return `plan auto-switch: serving ${serving} | ${codingPart(coding, watched, nowMs)} | start-plan: ${startPart(start)}`;
 }
 
 /** Restore pristine module state in tests. */

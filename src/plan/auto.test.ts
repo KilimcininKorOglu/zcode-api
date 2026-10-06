@@ -7,12 +7,16 @@ import {
   activePlan,
   codingUsable,
   decidePlan,
+  describeCodingWindow,
+  formatDuration,
+  formatPollLine,
   hasUsableBalance,
   nextPlanInPriority,
   notePlanFallback,
   planPollIntervalMsOf,
   planPriorityOf,
   planWatchedLimitsOf,
+  readableReset,
   shouldFallbackPlan,
   sniffStartPlanRejection,
   startPlanAutoWatcher,
@@ -330,6 +334,51 @@ describe("watcher tick", () => {
     await watcher.tick();
     expect(activePlan(cfg)).toBe("start-plan");
     watcher.stop();
+  });
+});
+
+describe("poll line formatting", () => {
+  const now = 1_800_000_000_000;
+
+  it("formats durations and reset countdowns (seconds and ms both seen upstream)", () => {
+    expect(formatDuration(3 * 3600_000 + 10 * 60_000)).toBe("3h 10m");
+    expect(formatDuration(45 * 60_000)).toBe("45m");
+    expect(formatDuration(6 * 86_400_000 + 2 * 3600_000)).toBe("6d 2h");
+    expect(readableReset((now + 3 * 3600_000 + 10 * 60_000) / 1000, now)).toBe("in 3h 10m");
+    expect(readableReset(now + 60_000, now)).toBe("in 1m");
+    expect(readableReset(now - 1, now)).toBe("overdue");
+    expect(readableReset(undefined, now)).toBeUndefined();
+  });
+
+  it("describes a watched window with grouped numbers and a reset countdown", () => {
+    expect(describeCodingWindow({ type: "TIME_LIMIT", remaining: 71, nextResetTime: now + 3.1 * 3600_000 }, now)).toBe(
+      "71 left, resets in 3h 6m",
+    );
+  });
+
+  it("shows X/Y when the total is self-consistent, the remaining share when not", () => {
+    expect(describeCodingWindow({ type: "TOKENS_LIMIT", remaining: 71_234_567, total: 250_000_000 }, now)).toBe(
+      "71.234.567 / 250.000.000 left",
+    );
+    // Live junk total (1 with remaining 71): stay with the plain remaining.
+    expect(describeCodingWindow({ type: "TIME_LIMIT", remaining: 71, total: 1 }, now)).toBe("71 left");
+    // No remaining: upstream `percentage` is the USED share (TUI-verified live).
+    expect(describeCodingWindow({ type: "TOKENS_LIMIT", percentage: 83 }, now)).toBe("17% left");
+  });
+
+  it("renders the full probe line and stays silent when nothing was observed", () => {
+    const line = formatPollLine(
+      "coding-plan",
+      { ok: true, balances: [] },
+      { ok: true, level: "lite", limits: [{ type: "TIME_LIMIT", remaining: 71, nextResetTime: now + 3 * 3600_000 }] },
+      ["TIME_LIMIT", "WEEK_LIMIT"],
+      now,
+    );
+    expect(line).toBe(
+      "plan auto-switch: serving coding-plan | TIME_LIMIT: 71 left, resets in 3h | WEEK_LIMIT: not reported | start-plan: balance empty",
+    );
+    expect(formatPollLine("coding-plan", null, null, ["TIME_LIMIT"], now)).toBeNull();
+    expect(formatPollLine("coding-plan", { ok: false, balances: [], error: "balance: 3001 parameter error" }, null, ["TIME_LIMIT"], now)).toBeNull();
   });
 });
 

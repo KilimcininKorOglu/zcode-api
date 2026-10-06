@@ -287,44 +287,59 @@ export async function handleResponses(
     return errorResponse(502, "upstream_unreachable", (err as Error).message);
   }
 
-  // Hybrid plan auto-switch (mirrors handler.ts): on a rejected plan retry
-  // the SAME request once on the NEXT plan in config.planPriority — body,
-  // headers and URL all rebuild with the target plan (the start-plan system
-  // prompt and the JWT auth are both baked into the start-plan variants).
-  // Runs before the captcha retry so a dead plan never spends a pooled
-  // token. Rejection covers error statuses AND, on start-plan, HTTP 200 with
-  // a JSON error envelope.
-  let planRejected = shouldFallbackPlan(upstreamResp.status, plan);
-  if (!planRejected && plan === "start-plan" && upstreamResp.status === 200) {
-    const sniff = await sniffStartPlanRejection(upstreamResp);
-    planRejected = sniff.rejected;
-    upstreamResp = sniff.response;
-  }
-  {
-    const outcome = await retryOnPlanExhausted({
-      rejected: planRejected,
-      plan,
-      priority: planPriorityOf(opts.config),
-      onFallback: (message) => {
-        console.log(`[responses] ${message}`);
-        appendErrorLog({ kind: "plan_fallback", reqId: "[responses]", message, ...traceFields });
-      },
-      rebuildAndDispatch: (target) => {
-        transformedBody = transformRequestBody(anthropicJson, {
-          format: "anthropic",
-          metadataUserId,
-          startPlan: target === "start-plan",
-          provider: opts.config.provider,
-        }) ?? anthropicJson;
-        upstreamHeaders = buildUpstreamHeaderPairs(clientReq, upstreamFormat, cred, opts.config.identity, target, undefined, undefined);
-        upstreamReq = buildUpstreamRequest(clientReq, upstreamFormat, providerDef, cred, transformedBody, opts.config.identity, target, undefined, undefined);
-        return dispatch(upstreamHeaders);
-      },
-    });
-    if (outcome.handled && outcome.resp) {
-      plan = outcome.target ?? plan;
-      startPlan = plan === "start-plan";
-      upstreamResp = outcome.resp;
+  // Hybrid plan auto-switch (mirrors handler.ts, only while planAutoSwitch
+  // is on — with it off, plan selection is entirely the operator's config):
+  // on a rejected plan retry the SAME request once on the NEXT plan in
+  // config.planPriority — body, headers and URL all rebuild with the target
+  // plan (the start-plan system prompt and the JWT auth are both baked into
+  // the start-plan variants). Runs before the captcha retry so a dead plan
+  // never spends a pooled token. Rejection covers error statuses AND, on
+  // start-plan, HTTP 200 with a JSON error envelope.
+  if (opts.config.planAutoSwitch === true) {
+    let planRejected = shouldFallbackPlan(upstreamResp.status, plan);
+    if (!planRejected && plan === "start-plan" && upstreamResp.status === 200) {
+      const sniff = await sniffStartPlanRejection(upstreamResp);
+      planRejected = sniff.rejected;
+      upstreamResp = sniff.response;
+    }
+    {
+      const outcome = await retryOnPlanExhausted({
+        rejected: planRejected,
+        plan,
+        priority: planPriorityOf(opts.config),
+        onFallback: (message) => {
+          console.log(`[responses] ${message}`);
+          appendErrorLog({ kind: "plan_fallback", reqId: "[responses]", message, ...traceFields });
+        },
+        rebuildAndDispatch: (target) => {
+          transformedBody = transformRequestBody(anthropicJson, {
+            format: "anthropic",
+            metadataUserId,
+            startPlan: target === "start-plan",
+            provider: opts.config.provider,
+          }) ?? anthropicJson;
+          upstreamHeaders = buildUpstreamHeaderPairs(clientReq, upstreamFormat, cred, opts.config.identity, target, undefined, undefined);
+          upstreamReq = buildUpstreamRequest(clientReq, upstreamFormat, providerDef, cred, transformedBody, opts.config.identity, target, undefined, undefined);
+          return dispatch(upstreamHeaders);
+        },
+      });
+      if (outcome.handled && outcome.resp) {
+        plan = outcome.target ?? plan;
+        startPlan = plan === "start-plan";
+        upstreamResp = outcome.resp;
+        // Mirror of handler.ts: the fallback's own answer gets the same sniff
+        // when it landed on the start-plan gateway; with both plans exhausted
+        // it comes back as a 200 quota envelope, and the client gets a clean
+        // 429 instead of a fake 200.
+        if (startPlan && upstreamResp.status === 200) {
+          const sniff = await sniffStartPlanRejection(upstreamResp);
+          if (sniff.rejected) {
+            appendErrorLog({ kind: "plan_quota_exhausted", reqId: "[responses]", message: "fallback also rejected — both plans exhausted", ...traceFields });
+            return errorResponse(429, "plan_quota_exhausted", "the upstream rejected the request on both plans (the fallback also got a quota envelope)");
+          }
+          upstreamResp = sniff.response;
+        }
+      }
     }
   }
 

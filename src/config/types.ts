@@ -249,10 +249,10 @@ export interface ProxyConfig {
   planPriority?: PlanTier[];
   /**
    * Hybrid plan auto-switch master switch: on = the watcher keeps the
-   * effective plan on the first usable entry of `planPriority`; off = `plan`
-   * above is used exactly as configured. Either way a rejected request falls
-   * to the next plan for that one request. `loadConfig` always sets this;
-   * fixtures may omit it.
+   * effective plan on the first usable entry of `planPriority` and a
+   * rejected request falls to the next plan for that one request; off =
+   * `plan` above is used exactly as configured, with no fallback at all.
+   * `loadConfig` always sets this; fixtures may omit it.
    */
   planAutoSwitch?: boolean;
   /**

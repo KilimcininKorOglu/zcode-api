@@ -1362,6 +1362,7 @@ describe("proxyRequest — Anthropic compatibility mode (coding-plan)", () => {
     const startPlanConfig: ProxyConfig = {
       ...testConfig,
       plan: "start-plan",
+      planAutoSwitch: true,
     };
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async (req: Request | string): Promise<Response> => {

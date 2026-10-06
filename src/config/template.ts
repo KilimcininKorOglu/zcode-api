@@ -31,9 +31,10 @@ provider: zai
 plan: coding-plan
 
 # Hybrid plan auto-switch: while on, the watcher keeps traffic on the first
-# plan in \`planPriority\` whose watched signals still have quota. The \`plan\`
-# key above then only applies while this is off. A rejected request still
-# falls to the next plan for that one request either way.
+# plan in \`planPriority\` whose watched signals still have quota, and a
+# request a plan rejects falls to the next plan for that one request. The
+# \`plan\` key above then only applies while this is off. Flag off = no
+# auto-switching and no fallback at all.
 # Env override: ZCODE_PLAN_AUTO_SWITCH
 planAutoSwitch: false
 

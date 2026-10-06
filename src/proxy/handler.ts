@@ -360,46 +360,64 @@ export async function proxyRequest(
     });
   }
 
-  // Hybrid plan fallback: the serving plan's gateway rejected the request
-  // (rejected auth / exhausted quota). Retry the SAME request once on the
-  // NEXT plan in config.planPriority and cool the rejected plan down until
-  // the watcher sees it usable again. Body + headers rebuild with the target
-  // plan — the body transform (start-plan system) and the auth builder (JWT
-  // vs API key) are both plan-aware. Runs regardless of planAutoSwitch: a
-  // hand-pinned plan gets the same one-request repair. Rejection covers error
-  // statuses AND, on start-plan, HTTP 200 with a JSON error envelope — that
-  // gateway exhausts a plan that way too (observed live 2026-10-06: 200 +
-  // {"code":1005,"msg":"exceed quota limit"}).
-  let planRejected = shouldFallbackPlan(upstreamResp.status, plan);
-  if (!planRejected && plan === "start-plan" && upstreamResp.status === 200) {
-    const sniff = await sniffStartPlanRejection(upstreamResp);
-    planRejected = sniff.rejected;
-    upstreamResp = sniff.response;
-  }
-  {
-    const outcome = await retryOnPlanExhausted({
-      rejected: planRejected,
-      plan,
-      priority: planPriorityOf(config),
-      onFallback: (message) => {
-        console.log(`${reqId} ${message}`);
-        appendErrorLog({ kind: "plan_fallback", reqId, message, ...clientTraceFields(clientReq) });
-      },
-      rebuildAndDispatch: (target) => {
-        transformedBody = transformRequestBody(upstreamBody, { format: upstreamFormat, metadataUserId, startPlan: target === "start-plan", provider: config.provider });
-        upstreamHeaderPairs = buildUpstreamHeaderPairs(clientReq, upstreamFormat, cred, config.identity, target, undefined, clientSession);
-        if (useOrderedTransport && translateMode) {
-          upstreamHeaderPairs = capOrderedAcceptEncoding(upstreamHeaderPairs);
+  // Hybrid plan fallback (only while planAutoSwitch is on — the fallback is
+  // part of the auto-switch; with it off, plan selection is entirely the
+  // operator's config and failures pass through untouched): the serving
+  // plan's gateway rejected the request (rejected auth / exhausted quota).
+  // Retry the SAME request once on the NEXT plan in config.planPriority and
+  // cool the rejected plan down until the watcher sees it usable again.
+  // Body + headers rebuild with the target plan — the body transform
+  // (start-plan system) and the auth builder (JWT vs API key) are both
+  // plan-aware. Rejection covers error statuses AND, on start-plan, HTTP 200
+  // with a JSON error envelope — that gateway exhausts a plan that way too
+  // (observed live 2026-10-06: 200 + {"code":1005,"msg":"exceed quota
+  // limit"}).
+  if (config.planAutoSwitch === true) {
+    let planRejected = shouldFallbackPlan(upstreamResp.status, plan);
+    if (!planRejected && plan === "start-plan" && upstreamResp.status === 200) {
+      const sniff = await sniffStartPlanRejection(upstreamResp);
+      planRejected = sniff.rejected;
+      upstreamResp = sniff.response;
+    }
+    {
+      const outcome = await retryOnPlanExhausted({
+        rejected: planRejected,
+        plan,
+        priority: planPriorityOf(config),
+        onFallback: (message) => {
+          console.log(`${reqId} ${message}`);
+          appendErrorLog({ kind: "plan_fallback", reqId, message, ...clientTraceFields(clientReq) });
+        },
+        rebuildAndDispatch: (target) => {
+          transformedBody = transformRequestBody(upstreamBody, { format: upstreamFormat, metadataUserId, startPlan: target === "start-plan", provider: config.provider });
+          upstreamHeaderPairs = buildUpstreamHeaderPairs(clientReq, upstreamFormat, cred, config.identity, target, undefined, clientSession);
+          if (useOrderedTransport && translateMode) {
+            upstreamHeaderPairs = capOrderedAcceptEncoding(upstreamHeaderPairs);
+          }
+          upstreamReq = buildUpstreamRequest(clientReq, upstreamFormat, provider, cred, transformedBody, config.identity, target, undefined, clientSession);
+          return dispatch(upstreamReq, upstreamHeaderPairs);
+        },
+      });
+      if (outcome.handled && outcome.resp) {
+        plan = outcome.target ?? plan;
+        startPlan = plan === "start-plan";
+        meta.plan = plan;
+        upstreamResp = outcome.resp;
+        // The fallback's own answer must pass the same sniff when it landed on
+        // the start-plan gateway: with every plan exhausted the retry comes
+        // back as a 200 quota envelope (live 2026-10-06: Claude Code saw
+        // "JSON but not a Message" + 0 stream events). A rejected envelope
+        // becomes a clean 429 instead of a fake 200.
+        if (startPlan && upstreamResp.status === 200) {
+          const sniff = await sniffStartPlanRejection(upstreamResp);
+          if (sniff.rejected) {
+            appendErrorLog({ kind: "plan_quota_exhausted", reqId, message: "fallback also rejected — both plans exhausted", ...clientTraceFields(clientReq) });
+            printRow(reqId, format, meta, 429, started, headersAt, 0, 0, 0);
+            return errorResponse(429, "plan_quota_exhausted", "the upstream rejected the request on both plans (the fallback also got a quota envelope)");
+          }
+          upstreamResp = sniff.response;
         }
-        upstreamReq = buildUpstreamRequest(clientReq, upstreamFormat, provider, cred, transformedBody, config.identity, target, undefined, clientSession);
-        return dispatch(upstreamReq, upstreamHeaderPairs);
-      },
-    });
-    if (outcome.handled && outcome.resp) {
-      plan = outcome.target ?? plan;
-      startPlan = plan === "start-plan";
-      meta.plan = plan;
-      upstreamResp = outcome.resp;
+      }
     }
   }
 
