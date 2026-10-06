@@ -209,6 +209,47 @@ export async function fetchStartPlanBalance(
   return { ok: true, balances: parseBalanceEntries(env.data) };
 }
 
+/** Result of one coding-plane probe for the plan auto-switch watcher. */
+export interface CodingPlanUsage {
+  ok: boolean;
+  /** Plan tier string from upstream (e.g. `"max"`); null when unreported. */
+  level: string | null;
+  limits: QuotaCodingLimit[];
+  /** Human-readable failure when `ok` is false. */
+  error?: string;
+}
+
+/**
+ * Probe the coding-plan monitor plane (`GET {coding origin}/api/monitor/usage/
+ * quota/limit`) with the stored credential's raw API key — the same contract
+ * the official usage panel and /quota use. Returns null when the credential
+ * cannot produce a coding plane at all (no credential / unusable origin); the
+ * caller treats that as "no data, fail-open".
+ */
+export async function fetchCodingPlanUsage(
+  config: ProxyConfig,
+  fetchImpl: typeof fetch = fetch,
+  loadCredentialImpl: typeof loadCredential = loadCredential,
+): Promise<CodingPlanUsage | null> {
+  const cred = await loadCredentialImpl().catch(() => null);
+  if (!cred) return null;
+  const cOrigin = codingOrigin(config, cred.provider);
+  if (!cOrigin) return null;
+  const env = await fetchBilling(cOrigin, "/api/monitor/usage/quota/limit", {
+    authorization: credentialString(cred),
+    accept: "application/json",
+  }, fetchImpl);
+  if (!env || !isSuccessfulEnvelope(env)) {
+    return { ok: false, level: null, limits: [], error: `coding: ${env ? `${env.code} ${env.msg ?? ""}`.trim() : "request failed"}` };
+  }
+  const d = (env.data ?? {}) as { level?: unknown; limits?: unknown };
+  return {
+    ok: true,
+    level: typeof d.level === "string" && d.level.trim() !== "" ? d.level.trim() : null,
+    limits: (Array.isArray(d.limits) ? d.limits : []).map(parseCodingLimit).filter((l): l is QuotaCodingLimit => l !== null),
+  };
+}
+
 /** Build the quota snapshot. Exported for tests. `loadCredentialImpl` is injectable for tests. */
 export async function collectQuotaSnapshot(
   config: ProxyConfig,
@@ -247,20 +288,12 @@ export async function collectQuotaSnapshot(
   // headers, no `?type=2`). Failures degrade to null like the official
   // `fetchQuota().catch(() => null)`, never killing the credits data.
   let codingPlan: QuotaCodingPlan | null = null;
-  const cOrigin = codingOrigin(config, cred.provider);
-  if (cOrigin) {
-    const cEnvelope = await fetchBilling(cOrigin, "/api/monitor/usage/quota/limit", {
-      authorization: credentialString(cred),
-      accept: "application/json",
-    }, fetchImpl);
-    if (cEnvelope && isSuccessfulEnvelope(cEnvelope)) {
-      const d = (cEnvelope.data ?? {}) as { level?: unknown; limits?: unknown };
-      codingPlan = {
-        level: typeof d.level === "string" && d.level.trim() !== "" ? d.level.trim() : null,
-        limits: (Array.isArray(d.limits) ? d.limits : []).map(parseCodingLimit).filter((l): l is QuotaCodingLimit => l !== null),
-      };
+  const usage = await fetchCodingPlanUsage(config, fetchImpl, loadCredentialImpl);
+  if (usage) {
+    if (usage.ok) {
+      codingPlan = { level: usage.level, limits: usage.limits };
     } else {
-      errors.push(`coding: ${cEnvelope ? `${cEnvelope.code} ${cEnvelope.msg ?? ""}`.trim() : "request failed"}`);
+      errors.push(usage.error ?? "coding: probe failed");
     }
   }
 

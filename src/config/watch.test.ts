@@ -1,7 +1,7 @@
 /**
  * Tests for config.yaml hot reload: in-place apply of per-request fields,
  * restart-only fields reported but not applied, broken files keeping the
- * running config (and the watcher alive), and claim start/stop reconciliation.
+ * running config (and the watcher alive), and claim/plan-watcher reconciliation.
  */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -112,5 +112,22 @@ describe("watchConfigFile", () => {
     await waitFor(() => calls.includes("start"));
     writeFileSync(configPath(), BASE_YAML);
     await waitFor(() => calls.includes("stop"));
+  });
+
+  it("starts the plan watcher with the toggle and restarts it on a poll-interval change", async () => {
+    writeFileSync(configPath(), BASE_YAML);
+    const current = loadConfig(configPath());
+    const calls: string[] = [];
+    startWatcher(current, {
+      planWatcherRunning: () => calls.length > 0 && calls[calls.length - 1] === "start",
+      startPlanWatcher: () => calls.push("start"),
+      stopPlanWatcher: () => calls.push("stop"),
+    });
+    writeFileSync(configPath(), `${BASE_YAML}planAutoSwitch: true\n`);
+    await waitFor(() => calls.includes("start"));
+    // A dirty planPollIntervalSec must restart the running watcher so the new
+    // cadence reaches the timer (claim-block pattern).
+    writeFileSync(configPath(), `${BASE_YAML}planAutoSwitch: true\nplanPollIntervalSec: 5\n`);
+    await waitFor(() => calls.filter((c) => c === "start").length === 2);
   });
 });

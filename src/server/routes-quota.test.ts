@@ -11,7 +11,7 @@
  */
 import { describe, it, expect } from "bun:test";
 import os from "node:os";
-import { collectQuotaSnapshot, handleQuota } from "./routes-quota.js";
+import { collectQuotaSnapshot, fetchCodingPlanUsage, handleQuota } from "./routes-quota.js";
 import type { ProxyConfig } from "../config/types.js";
 import type { Credential } from "../auth/types.js";
 
@@ -317,5 +317,36 @@ describe("collectQuotaSnapshot coding plane", () => {
     expect(planeCalls(calls, "monitor").length).toBe(0);
     expect(snap.codingPlan).toBeNull();
     expect(snap.errors).toEqual([]);
+  });
+});
+
+describe("fetchCodingPlanUsage", () => {
+  it("returns ok + parsed limits on a success envelope", async () => {
+    const { fetchImpl, calls } = makeBillingFetch({
+      codingBody: { level: "max", limits: [{ type: "TIME_LIMIT", remaining: 3894, number: 4000 }] },
+    });
+    const usage = await fetchCodingPlanUsage(makeConfig(), fetchImpl, loadFake);
+    expect(usage).toEqual({
+      ok: true,
+      level: "max",
+      limits: [{ type: "TIME_LIMIT", remaining: 3894, total: 4000 }],
+    });
+    const monitor = planeCalls(calls, "monitor");
+    expect(monitor).toHaveLength(1);
+    expect(monitor[0].headers["authorization"]).toBe("key-x.secret-y");
+  });
+
+  it("surfaces the envelope failure as ok:false + error, never throwing", async () => {
+    const { fetchImpl, calls } = makeBillingFetch({ codingCode: 3012 });
+    const usage = await fetchCodingPlanUsage(makeConfig(), fetchImpl, loadFake);
+    expect(usage?.ok).toBe(false);
+    expect(usage?.error).toContain("coding: 3012");
+    expect(planeCalls(calls, "monitor")).toHaveLength(1);
+  });
+
+  it("returns null without a credential (no monitor call)", async () => {
+    const { fetchImpl, calls } = makeBillingFetch();
+    expect(await fetchCodingPlanUsage(makeConfig(), fetchImpl, loadNone)).toBeNull();
+    expect(planeCalls(calls, "monitor")).toHaveLength(0);
   });
 });

@@ -202,6 +202,32 @@ export interface ClientSigningConfig {
   origin: string;
 }
 
+/** Upstream plan tiers the routing and auto-switch move between. */
+export type PlanTier = "coding-plan" | "start-plan";
+
+/** Preference order used when the config carries none (today's behavior). */
+export const DEFAULT_PLAN_PRIORITY: PlanTier[] = ["start-plan", "coding-plan"];
+
+/** Default poll cadence for the plan auto-switch watcher, in seconds. */
+export const DEFAULT_PLAN_POLL_INTERVAL_SEC = 30;
+
+/**
+ * Per-plan exhaustion rule: the upstream signals that make the plan "not
+ * enough" so the next plan in `planPriority` takes over. coding-plan rows are
+ * monitor-plane limit types (TIME_LIMIT = the 5h window, WEEK_LIMIT = the
+ * weekly window); start-plan has the single BALANCE signal (the trial credits
+ * plane).
+ */
+export interface PlanSwitchRule {
+  limits: string[];
+}
+
+/** Default rules: every known signal of each plan is watched. */
+export const DEFAULT_PLAN_SWITCH_RULES: { "coding-plan": PlanSwitchRule; "start-plan": PlanSwitchRule } = {
+  "coding-plan": { limits: ["TIME_LIMIT", "WEEK_LIMIT"] },
+  "start-plan": { limits: ["BALANCE"] },
+};
+
 /** Top-level proxy configuration. */
 export interface ProxyConfig {
   server: {
@@ -212,17 +238,31 @@ export interface ProxyConfig {
   /** Active upstream provider. */
   provider: "zai" | "bigmodel";
   /** Which plan tier to use. "coding-plan" (default) uses direct upstream endpoints; "start-plan" routes through zcode.z.ai with JWT auth. */
-  plan: "coding-plan" | "start-plan";
+  plan: PlanTier;
   /**
-   * Hybrid plan auto-switch: prefer the start-plan (trial) entitlement while it
-   * has balance and switch to the coding plan automatically when it runs out
-   * (periodic balance poll). When off or omitted, `plan` above is used exactly
-   * as configured — and a start-plan request the gateway rejects (error status
-   * or a 200 quota envelope) still falls back to the coding plan for that
-   * request, flag on or off. `loadConfig` always sets this; fixtures may omit
-   * it.
+   * Plan preference order for the auto-switch: the first plan whose watched
+   * signals still have quota serves every request while `planAutoSwitch` is
+   * on. Default ["start-plan", "coding-plan"] (prefer the trial). A rejected
+   * request still falls over for that one request (see the plan fallback),
+   * flag on or off. `loadConfig` always sets this; fixtures may omit it.
+   */
+  planPriority?: PlanTier[];
+  /**
+   * Hybrid plan auto-switch master switch: on = the watcher keeps the
+   * effective plan on the first usable entry of `planPriority`; off = `plan`
+   * above is used exactly as configured. Either way a rejected request falls
+   * to the next plan for that one request. `loadConfig` always sets this;
+   * fixtures may omit it.
    */
   planAutoSwitch?: boolean;
+  /**
+   * Which signals make each plan "not enough" for the auto-switch watcher.
+   * Default: every known signal (coding-plan TIME_LIMIT + WEEK_LIMIT,
+   * start-plan BALANCE). `loadConfig` always sets this; fixtures may omit it.
+   */
+  planSwitchRules?: { "coding-plan": PlanSwitchRule; "start-plan": PlanSwitchRule };
+  /** Auto-switch poll interval in seconds (default 30; watcher restarts on change). */
+  planPollIntervalSec?: number;
   /**
    * Send batch (non-streaming) client requests upstream as `stream: true` and
    * reassemble the SSE into the single JSON the client expects. The upstream

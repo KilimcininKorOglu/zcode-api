@@ -4,7 +4,8 @@
  */
 import { readFileSync, existsSync } from "node:fs";
 import { parse } from "yaml";
-import type { ClientIdentityConfig, ProxyConfig, ProviderEndpoints, ProxyIdentity, ResponsesConfig, McpConfig, AsyncConfig, EndpointRoutingConfig, ClientSigningConfig, ClaimConfig } from "./types.js";
+import type { ClientIdentityConfig, PlanSwitchRule, PlanTier, ProxyConfig, ProviderEndpoints, ProxyIdentity, ResponsesConfig, McpConfig, AsyncConfig, EndpointRoutingConfig, ClientSigningConfig, ClaimConfig } from "./types.js";
+import { DEFAULT_PLAN_PRIORITY, DEFAULT_PLAN_POLL_INTERVAL_SEC, DEFAULT_PLAN_SWITCH_RULES } from "./types.js";
 
 /** Environment variable keys that override YAML values. */
 const ENV = {
@@ -12,6 +13,8 @@ const ENV = {
   PROXY_API_KEY: "ZCODE_PROXY_API_KEY",
   PROVIDER: "ZCODE_PROVIDER",
   PLAN_AUTO_SWITCH: "ZCODE_PLAN_AUTO_SWITCH",
+  PLAN_PRIORITY: "ZCODE_PLAN_PRIORITY",
+  PLAN_POLL_INTERVAL_SEC: "ZCODE_PLAN_POLL_INTERVAL_SEC",
   BATCH_AS_STREAM: "ZCODE_BATCH_AS_STREAM",
   APP_VERSION: "ZCODE_APP_VERSION",
   SOURCE_TITLE: "ZCODE_SOURCE_TITLE",
@@ -40,6 +43,8 @@ const DEFAULTS = {
   PROVIDER: "zai" as const,
   PLAN: "coding-plan" as const,
   PLAN_AUTO_SWITCH: false,
+  PLAN_PRIORITY: DEFAULT_PLAN_PRIORITY,
+  PLAN_POLL_INTERVAL_SEC: DEFAULT_PLAN_POLL_INTERVAL_SEC,
   BATCH_AS_STREAM: true,
   DEFAULT_MODEL: "glm-4.6",
   LOG_LEVEL: "info" as const,
@@ -113,6 +118,13 @@ export function loadConfig(path: string): ProxyConfig {
   const provider = resolveProvider(process.env[ENV.PROVIDER] ?? parsed?.provider);
   const plan = resolvePlan(parsed?.plan);
   const planAutoSwitch = resolveBool(process.env[ENV.PLAN_AUTO_SWITCH] ?? parsed?.planAutoSwitch, DEFAULTS.PLAN_AUTO_SWITCH);
+  const planPriority = resolvePlanPriority(process.env[ENV.PLAN_PRIORITY] ?? parsed?.planPriority);
+  const planSwitchRules = resolvePlanSwitchRules(parsed?.planSwitchRules);
+  const planPollIntervalSec = resolvePositiveInt(
+    process.env[ENV.PLAN_POLL_INTERVAL_SEC] ?? parsed?.planPollIntervalSec,
+    DEFAULTS.PLAN_POLL_INTERVAL_SEC,
+    "planPollIntervalSec",
+  );
   const batchAsStream = resolveBool(process.env[ENV.BATCH_AS_STREAM] ?? parsed?.batchAsStream, DEFAULTS.BATCH_AS_STREAM);
 
   // --- providers ---
@@ -157,6 +169,9 @@ export function loadConfig(path: string): ProxyConfig {
     provider,
     plan,
     planAutoSwitch,
+    planPriority,
+    planSwitchRules,
+    planPollIntervalSec,
     batchAsStream,
     providers: { zai, bigmodel },
     defaultModel,
@@ -353,6 +368,84 @@ function resolvePlan(raw: unknown): "coding-plan" | "start-plan" {
   if (raw === undefined || raw === null) return DEFAULTS.PLAN;
   if (raw === "coding-plan" || raw === "start-plan") return raw;
   throw new Error(`Invalid plan "${String(raw)}": must be "coding-plan" or "start-plan"`);
+}
+
+const PLAN_TIERS: readonly string[] = ["coding-plan", "start-plan"];
+/** Monitor-plane limit types a coding-plan rule may watch. */
+const CODING_LIMIT_TYPES: readonly string[] = ["TIME_LIMIT", "WEEK_LIMIT"];
+/** Signals a start-plan rule may watch (the trial credits plane). */
+const START_LIMIT_TYPES: readonly string[] = ["BALANCE"];
+
+/**
+ * Resolve and validate the plan priority list. Accepts a YAML list or a
+ * comma-separated env string. Mirrors `resolvePlan`'s hard validation style:
+ * an unrecognized entry, an empty list or a duplicate THROWS — a silent
+ * fallback sent traffic to the wrong plan tier.
+ */
+function resolvePlanPriority(raw: unknown): PlanTier[] {
+  let list: unknown[];
+  if (raw === undefined || raw === null) {
+    list = DEFAULTS.PLAN_PRIORITY;
+  } else if (typeof raw === "string") {
+    list = raw.split(",").map((s) => s.trim()).filter((s) => s !== "");
+  } else if (Array.isArray(raw)) {
+    list = raw;
+  } else {
+    throw new Error(`Invalid planPriority ${JSON.stringify(raw)}: must be a list of plan tiers`);
+  }
+  if (list.length === 0) {
+    throw new Error('planPriority must list at least one plan ("coding-plan", "start-plan")');
+  }
+  const seen = new Set<string>();
+  return list.map((entry) => {
+    const v = String(entry);
+    if (!PLAN_TIERS.includes(v)) {
+      throw new Error(`Invalid planPriority entry "${v}": must be "coding-plan" or "start-plan"`);
+    }
+    if (seen.has(v)) {
+      throw new Error(`planPriority lists "${v}" more than once`);
+    }
+    seen.add(v);
+    return v as PlanTier;
+  });
+}
+
+/** Resolve one plan's switch rule, validating the limit names that plan knows. */
+function resolvePlanSwitchRule(raw: unknown, allowed: readonly string[], name: string): PlanSwitchRule {
+  const obj = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  const list = obj.limits;
+  // Absent limits = watch every known signal of this plan.
+  if (list === undefined || list === null) return { limits: [...allowed] };
+  if (!Array.isArray(list)) {
+    throw new Error(`${name}.limits must be a list`);
+  }
+  if (list.length === 0) {
+    throw new Error(`${name}.limits must not be empty (omit the rule to watch every signal)`);
+  }
+  return {
+    limits: list.map((entry) => {
+      const v = String(entry);
+      if (!allowed.includes(v)) {
+        throw new Error(`Invalid ${name}.limits entry "${v}": must be one of ${allowed.join(", ")}`);
+      }
+      return v;
+    }),
+  };
+}
+
+/** Resolve the per-plan switch rules; omitted plan blocks fall back to their defaults. */
+function resolvePlanSwitchRules(raw: unknown): { "coding-plan": PlanSwitchRule; "start-plan": PlanSwitchRule } {
+  if (raw === undefined || raw === null) {
+    return {
+      "coding-plan": { limits: [...DEFAULT_PLAN_SWITCH_RULES["coding-plan"].limits] },
+      "start-plan": { limits: [...DEFAULT_PLAN_SWITCH_RULES["start-plan"].limits] },
+    };
+  }
+  const obj = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  return {
+    "coding-plan": resolvePlanSwitchRule(obj["coding-plan"], CODING_LIMIT_TYPES, "planSwitchRules.coding-plan"),
+    "start-plan": resolvePlanSwitchRule(obj["start-plan"], START_LIMIT_TYPES, "planSwitchRules.start-plan"),
+  };
 }
 
 /** Resolve log level with fallback. */

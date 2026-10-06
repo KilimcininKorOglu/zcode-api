@@ -1,12 +1,18 @@
 /**
- * Tests for the hybrid plan auto-switch: the balance rule, per-request plan
- * resolution, the fallback seam, and the background watcher's tick.
+ * Tests for the configurable plan auto-switch: the balance rule, per-request
+ * plan resolution, the fallback seam, and the background watcher's tick.
  */
 import { describe, it, expect, beforeEach } from "bun:test";
 import {
   activePlan,
+  codingUsable,
+  decidePlan,
   hasUsableBalance,
+  nextPlanInPriority,
   notePlanFallback,
+  planPollIntervalMsOf,
+  planPriorityOf,
+  planWatchedLimitsOf,
   shouldFallbackPlan,
   sniffStartPlanRejection,
   startPlanAutoWatcher,
@@ -17,13 +23,17 @@ import {
 import type { QuotaBalanceEntry } from "../server/routes-quota.js";
 import type { ProxyConfig } from "../config/types.js";
 
-/** Minimal config fixture — plan/auto only reads plan, planAutoSwitch and claim.origin. */
+/** Minimal config fixture — the watcher reads plan*, claim.origin and providers.*.openaiBase. */
 function makeConfig(overrides: Partial<ProxyConfig> = {}): ProxyConfig {
   return {
-    plan: "coding-plan",
+    plan: "start-plan",
     planAutoSwitch: true,
     claim: { origin: "https://zcode.z.ai" },
     identity: { appVersion: "test" },
+    providers: {
+      zai: { anthropicBase: "https://api.z.ai/api/anthropic", openaiBase: "https://api.z.ai/api/coding/paas/v4" },
+      bigmodel: { anthropicBase: "https://open.bigmodel.cn/api/anthropic", openaiBase: "https://open.bigmodel.cn/api/coding/paas/v4" },
+    },
     ...overrides,
   } as unknown as ProxyConfig;
 }
@@ -56,18 +66,86 @@ describe("hasUsableBalance", () => {
   });
 });
 
+describe("config accessors", () => {
+  it("fall back to the shipped defaults when the keys are absent", () => {
+    expect(planPriorityOf(makeConfig())).toEqual(["start-plan", "coding-plan"]);
+    expect(planWatchedLimitsOf(makeConfig(), "coding-plan")).toEqual(["TIME_LIMIT", "WEEK_LIMIT"]);
+    expect(planWatchedLimitsOf(makeConfig(), "start-plan")).toEqual(["BALANCE"]);
+    expect(planPollIntervalMsOf(makeConfig())).toBe(30_000);
+  });
+
+  it("read the configured overrides", () => {
+    const cfg = makeConfig({
+      planPriority: ["coding-plan", "start-plan"],
+      planSwitchRules: { "coding-plan": { limits: ["WEEK_LIMIT"] }, "start-plan": { limits: ["BALANCE"] } },
+      planPollIntervalSec: 5,
+    });
+    expect(planPriorityOf(cfg)).toEqual(["coding-plan", "start-plan"]);
+    expect(planWatchedLimitsOf(cfg, "coding-plan")).toEqual(["WEEK_LIMIT"]);
+    expect(planPollIntervalMsOf(cfg)).toBe(5_000);
+  });
+});
+
+describe("nextPlanInPriority", () => {
+  it("returns the next entry and null for the last or unlisted plan", () => {
+    expect(nextPlanInPriority(["start-plan", "coding-plan"], "start-plan")).toBe("coding-plan");
+    expect(nextPlanInPriority(["start-plan", "coding-plan"], "coding-plan")).toBeNull();
+    expect(nextPlanInPriority(["coding-plan"], "coding-plan")).toBeNull();
+    expect(nextPlanInPriority(["start-plan"], "coding-plan")).toBeNull();
+  });
+});
+
+describe("decidePlan", () => {
+  it("serves the first usable plan in priority order", () => {
+    expect(decidePlan(["coding-plan", "start-plan"], { "coding-plan": true, "start-plan": true })).toBe("coding-plan");
+    expect(decidePlan(["coding-plan", "start-plan"], { "coding-plan": false, "start-plan": true })).toBe("start-plan");
+  });
+
+  it("parks on the head of the list when nothing is usable", () => {
+    expect(decidePlan(["coding-plan", "start-plan"], { "coding-plan": false, "start-plan": false })).toBe("coding-plan");
+  });
+
+  it("never leaves a single-tier priority", () => {
+    expect(decidePlan(["coding-plan"], { "coding-plan": false, "start-plan": true })).toBe("coding-plan");
+  });
+});
+
+describe("codingUsable", () => {
+  it("is false only when a watched window reports zero remaining", () => {
+    const limits = [
+      { type: "TIME_LIMIT", remaining: 0 },
+      { type: "WEEK_LIMIT", remaining: 500 },
+    ];
+    expect(codingUsable(limits, ["TIME_LIMIT", "WEEK_LIMIT"])).toBe(false);
+    expect(codingUsable(limits, ["WEEK_LIMIT"])).toBe(true);
+  });
+
+  it("treats absent or number-less rows as usable (fail-open)", () => {
+    expect(codingUsable([], ["TIME_LIMIT", "WEEK_LIMIT"])).toBe(true);
+    expect(codingUsable([{ type: "TIME_LIMIT" }], ["TIME_LIMIT"])).toBe(true);
+    // No remaining field: used/total estimates exhaustion.
+    expect(codingUsable([{ type: "TIME_LIMIT", used: 120, total: 120 }], ["TIME_LIMIT"])).toBe(false);
+  });
+});
+
 describe("activePlan", () => {
   it("returns config.plan untouched when planAutoSwitch is off", () => {
     const cfg = makeConfig({ plan: "start-plan", planAutoSwitch: false });
     expect(activePlan(cfg)).toBe("start-plan");
   });
 
-  it("assumes start-plan before the first balance probe", () => {
+  it("assumes the priority head before the first poll", () => {
     expect(activePlan(makeConfig())).toBe("start-plan");
+    expect(activePlan(makeConfig({ planPriority: ["coding-plan", "start-plan"] }))).toBe("coding-plan");
+  });
+
+  it("falls to the second plan during a cooldown before any poll data", () => {
+    __setFallbackCooldownForTests(Date.now() + 60_000);
+    expect(activePlan(makeConfig())).toBe("coding-plan");
   });
 
   it("follows the watcher's effective plan", () => {
-    notePlanFallback();
+    notePlanFallback("start-plan", "coding-plan");
     expect(activePlan(makeConfig())).toBe("coding-plan");
   });
 });
@@ -85,92 +163,169 @@ describe("shouldFallbackPlan", () => {
     expect(shouldFallbackPlan(429, "start-plan")).toBe(true);
     expect(shouldFallbackPlan(502, "start-plan")).toBe(true);
     expect(shouldFallbackPlan(504, "start-plan")).toBe(true);
-    // Other 5xx and rate limits are load signals, not plan failures; and the
-    // coding plan has no further fallback target.
     expect(shouldFallbackPlan(500, "start-plan")).toBe(false);
     expect(shouldFallbackPlan(503, "start-plan")).toBe(false);
+  });
+
+  it("falls back only on the coding-plan exhaustion 429", () => {
+    // The watched TIME_LIMIT/WEEK_LIMIT windows emptying surface as 429s from
+    // the ultra gateway; 502/504 are absorbed by the dispatch-level gateway
+    // retry and 401/402 are credential problems a plan switch cannot fix.
+    expect(shouldFallbackPlan(429, "coding-plan")).toBe(true);
     expect(shouldFallbackPlan(402, "coding-plan")).toBe(false);
+    expect(shouldFallbackPlan(403, "coding-plan")).toBe(false);
+    expect(shouldFallbackPlan(500, "coding-plan")).toBe(false);
     expect(shouldFallbackPlan(502, "coding-plan")).toBe(false);
   });
 });
 
 describe("notePlanFallback", () => {
-  it("pins coding-plan and logs the switch once per change", () => {
+  it("pins the target plan and logs the switch once per change", () => {
     const logs: string[] = [];
-    notePlanFallback((m) => logs.push(m));
-    notePlanFallback((m) => logs.push(m));
+    notePlanFallback("start-plan", "coding-plan", (m) => logs.push(m));
+    notePlanFallback("start-plan", "coding-plan", (m) => logs.push(m));
     expect(activePlan(makeConfig())).toBe("coding-plan");
     expect(logs).toHaveLength(1);
     expect(logs[0]).toContain("coding-plan");
   });
 });
 
-/** Mock the billing/balance probe at the fetch level (billing envelope). */
-function fetchWithBalances(balances: unknown[]): typeof fetch {
-  return ((() =>
-    Promise.resolve(
-      new Response(JSON.stringify({ success: true, code: 200, data: { balances } })),
-    ))) as unknown as typeof fetch;
+interface PlaneProbe {
+  balances?: unknown[];
+  balanceFail?: boolean;
+  coding?: { level?: string; limits?: unknown[] };
+  codingFail?: boolean;
 }
 
+/** Mock both quota planes at the fetch level, routed by URL (billing vs monitor). */
+function fetchWithPlanes(probe: PlaneProbe): typeof fetch {
+  return ((async (input: RequestInfo | URL): Promise<Response> => {
+    const url = String(input);
+    if (url.includes("/api/monitor/usage/quota/limit")) {
+      if (probe.codingFail) return new Response("boom", { status: 500 });
+      return new Response(JSON.stringify({
+        success: true,
+        code: 200,
+        data: { level: probe.coding?.level ?? "max", limits: probe.coding?.limits ?? [] },
+      }));
+    }
+    if (url.includes("/billing/balance")) {
+      if (probe.balanceFail) {
+        return new Response(JSON.stringify({ success: false, code: 3012, msg: "jwt expired" }));
+      }
+      return new Response(JSON.stringify({ success: true, code: 200, data: { balances: probe.balances ?? [] } }));
+    }
+    return new Response("unexpected url", { status: 404 });
+  })) as unknown as typeof fetch;
+}
+
+const loadLive = (() => Promise.resolve({ apiKey: "k", jwt: "j", provider: "zai" })) as never;
+const loadNone = (() => Promise.resolve(null)) as never;
+
 describe("watcher tick", () => {
-  it("flips the effective plan from balance data", async () => {
+  const usableBalance = [{ show_name: "w", remaining_units: 3, expires_at: Math.floor(Date.now() / 1000) + 3600 }];
+  const fullCoding = { limits: [{ type: "TIME_LIMIT", remaining: 3894 }, { type: "WEEK_LIMIT", remaining: 500 }] };
+  const emptyCoding = { limits: [{ type: "TIME_LIMIT", remaining: 0 }, { type: "WEEK_LIMIT", remaining: 500 }] };
+
+  it("keeps start-plan while its balance holds (default priority)", async () => {
     const cfg = makeConfig();
     const watcher = startPlanAutoWatcher(cfg, {
-      fetchImpl: fetchWithBalances([{ show_name: "w", remaining_units: 3, expires_at: Math.floor(Date.now() / 1000) + 3600 }]),
-      loadCredentialImpl: (() => Promise.resolve({ apiKey: "k", jwt: "j", provider: "zai" })) as never,
+      fetchImpl: fetchWithPlanes({ balances: usableBalance, coding: fullCoding }),
+      loadCredentialImpl: loadLive,
     });
     await watcher.tick();
     expect(activePlan(cfg)).toBe("start-plan");
     watcher.stop();
   });
 
-  it("keeps coding-plan when the balance is empty", async () => {
-    const cfg = makeConfig();
+  it("moves coding-first traffic to start-plan when a watched window empties", async () => {
+    // The requested scenario: coding plan first; the 5h TIME_LIMIT hitting 0
+    // flips the watcher to start-plan while the weekly window still holds.
+    const cfg = makeConfig({ planPriority: ["coding-plan", "start-plan"] });
     const watcher = startPlanAutoWatcher(cfg, {
-      fetchImpl: fetchWithBalances([{ show_name: "w", remaining_units: 0 }]),
-      loadCredentialImpl: (() => Promise.resolve({ apiKey: "k", jwt: "j", provider: "zai" })) as never,
+      fetchImpl: fetchWithPlanes({ balances: usableBalance, coding: emptyCoding }),
+      loadCredentialImpl: loadLive,
+    });
+    await watcher.tick();
+    expect(activePlan(cfg)).toBe("start-plan");
+    watcher.stop();
+  });
+
+  it("stays on the priority head while both planes hold quota", async () => {
+    const cfg = makeConfig({ planPriority: ["coding-plan", "start-plan"] });
+    const watcher = startPlanAutoWatcher(cfg, {
+      fetchImpl: fetchWithPlanes({ balances: usableBalance, coding: fullCoding }),
+      loadCredentialImpl: loadLive,
     });
     await watcher.tick();
     expect(activePlan(cfg)).toBe("coding-plan");
     watcher.stop();
   });
 
-  it("treats a missing plan JWT as no data, not as coding-plan", async () => {
-    const cfg = makeConfig();
+  it("only watches the configured windows (planSwitchRules)", async () => {
+    // A rule narrowed to WEEK_LIMIT must ignore an emptied TIME_LIMIT.
+    const cfg = makeConfig({
+      planPriority: ["coding-plan", "start-plan"],
+      planSwitchRules: { "coding-plan": { limits: ["WEEK_LIMIT"] }, "start-plan": { limits: ["BALANCE"] } },
+    });
     const watcher = startPlanAutoWatcher(cfg, {
-      fetchImpl: fetchWithBalances([]),
-      loadCredentialImpl: (() => Promise.resolve(null)) as never,
+      fetchImpl: fetchWithPlanes({
+        balances: usableBalance,
+        coding: { limits: [{ type: "TIME_LIMIT", remaining: 0 }, { type: "WEEK_LIMIT", remaining: 500 }] },
+      }),
+      loadCredentialImpl: loadLive,
     });
     await watcher.tick();
-    // No data yet: the optimistic start-plan assumption stands (the
+    expect(activePlan(cfg)).toBe("coding-plan");
+    watcher.stop();
+  });
+
+  it("parks on the priority head when every plane reports empty", async () => {
+    const cfg = makeConfig();
+    const watcher = startPlanAutoWatcher(cfg, {
+      fetchImpl: fetchWithPlanes({ balances: [{ show_name: "w", remaining_units: 0 }], coding: emptyCoding }),
+      loadCredentialImpl: loadLive,
+    });
+    await watcher.tick();
+    expect(activePlan(cfg)).toBe("start-plan");
+    watcher.stop();
+  });
+
+  it("treats a missing credential as no data, not as exhaustion", async () => {
+    const cfg = makeConfig();
+    const watcher = startPlanAutoWatcher(cfg, {
+      fetchImpl: fetchWithPlanes({}),
+      loadCredentialImpl: loadNone,
+    });
+    await watcher.tick();
+    // No data yet: the optimistic priority-head assumption stands (the
     // per-request fallback corrects it if the gateway disagrees).
     expect(activePlan(cfg)).toBe("start-plan");
     watcher.stop();
   });
 
-  it("holds coding-plan through an active fallback cooldown even with balance", async () => {
-    const cfg = makeConfig();
-    notePlanFallback();
+  it("holds the current plan through an active fallback cooldown", async () => {
+    const cfg = makeConfig({ planPriority: ["coding-plan", "start-plan"] });
+    notePlanFallback("start-plan", "coding-plan");
     expect(activePlan(cfg)).toBe("coding-plan");
     const watcher = startPlanAutoWatcher(cfg, {
-      fetchImpl: fetchWithBalances([{ show_name: "w", remaining_units: 7, expires_at: Math.floor(Date.now() / 1000) + 3600 }]),
-      loadCredentialImpl: (() => Promise.resolve({ apiKey: "k", jwt: "j", provider: "zai" })) as never,
+      // start-plan reports balance again, but the gateway may still be
+      // rejecting it — hold the plan until the cooldown lapses.
+      fetchImpl: fetchWithPlanes({ balances: usableBalance, coding: emptyCoding }),
+      loadCredentialImpl: loadLive,
     });
     await watcher.tick();
-    // The gateway may still report balance while rejecting requests; hold
-    // coding-plan until the cooldown lapses so the plans do not flap.
     expect(activePlan(cfg)).toBe("coding-plan");
     watcher.stop();
   });
 
-  it("returns to start-plan once the cooldown lapses with balance available", async () => {
-    const cfg = makeConfig();
-    notePlanFallback();
+  it("reassesses once the cooldown lapses", async () => {
+    const cfg = makeConfig({ planPriority: ["coding-plan", "start-plan"] });
+    notePlanFallback("start-plan", "coding-plan");
     __setFallbackCooldownForTests(Date.now() - 1);
     const watcher = startPlanAutoWatcher(cfg, {
-      fetchImpl: fetchWithBalances([{ show_name: "w", remaining_units: 7, expires_at: Math.floor(Date.now() / 1000) + 3600 }]),
-      loadCredentialImpl: (() => Promise.resolve({ apiKey: "k", jwt: "j", provider: "zai" })) as never,
+      fetchImpl: fetchWithPlanes({ balances: usableBalance, coding: emptyCoding }),
+      loadCredentialImpl: loadLive,
     });
     await watcher.tick();
     expect(activePlan(cfg)).toBe("start-plan");

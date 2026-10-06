@@ -1,16 +1,19 @@
 /**
- * Hybrid plan auto-switch — prefer the start-plan (trial) entitlement while it
- * has balance and fall back to the coding plan when it runs out.
+ * Configurable plan auto-switch — the watcher keeps traffic on the first plan
+ * in `config.planPriority` whose watched signals still have quota.
+ *
+ * Signals per plan (config.planSwitchRules, default = every known one):
+ *  - start-plan: BALANCE — the trial credits plane (`billing/balance`).
+ *  - coding-plan: TIME_LIMIT / WEEK_LIMIT — the monitor-plane usage windows.
  *
  * Two mechanisms, mirroring existing repo patterns:
  *  - A background watcher (`startPlanAutoWatcher`, ClaimScheduler skeleton in
- *    ../claim/scheduler.ts) polls `billing/balance` every few minutes and
- *    updates the effective plan.
+ *    ../claim/scheduler.ts) polls both planes and updates the effective plan.
  *  - A per-request fallback seam (`retryOnPlanExhausted`, callback shape of
- *    retryOnCaptchaChallenge in ../proxy/captcha-retry.ts): when the start-plan
- *    gateway rejects a request with 401/402/403, the caller retries the SAME
- *    request once on the coding plan; a cooldown then keeps traffic on the
- *    coding plan until the watcher sees balance again.
+ *    retryOnCaptchaChallenge in ../proxy/captcha-retry.ts): when the serving
+ *    plan rejects a request, the caller retries the SAME request once on the
+ *    next plan in the priority list; a cooldown then holds traffic there until
+ *    the watcher reassesses. Runs regardless of `planAutoSwitch`.
  *
  * Handlers resolve the plan ONCE per request via `activePlan` — never read
  * `config.plan` mid-request, the watcher may flip it between rebuilds.
@@ -19,20 +22,30 @@
  * `getDefaultClientSigning` singleton pattern; `__resetPlanAutoStateForTests`
  * restores a clean slate in tests.
  */
-import type { ProxyConfig } from "../config/types.js";
-import { fetchStartPlanBalance, type QuotaBalanceEntry } from "../server/routes-quota.js";
+import {
+  DEFAULT_PLAN_POLL_INTERVAL_SEC,
+  DEFAULT_PLAN_PRIORITY,
+  DEFAULT_PLAN_SWITCH_RULES,
+  type PlanTier,
+  type ProxyConfig,
+} from "../config/types.js";
+import {
+  fetchCodingPlanUsage,
+  fetchStartPlanBalance,
+  type QuotaBalanceEntry,
+  type QuotaCodingLimit,
+} from "../server/routes-quota.js";
 
-export type PlanTier = "coding-plan" | "start-plan";
+/** Re-exported for the handlers importing the plan seam from here. */
+export type { PlanTier };
 
-/** Balance poll cadence — same default as the claim scheduler (5 min). */
-export const PLAN_POLL_INTERVAL_MS = 300_000;
-/** Stay on the coding plan after a fallback until the watcher sees balance. */
+/** Stay on the fallback plan after a rejection until the watcher reassesses. */
 export const PLAN_FALLBACK_COOLDOWN_MS = 600_000;
 /** Epoch values above this are milliseconds; upstream mixes seconds and ms in the wild. */
 const EPOCH_MS_THRESHOLD = 1e12;
 
 interface PlanAutoState {
-  /** Effective plan; null = no balance data yet → optimistically start-plan. */
+  /** Effective plan; null = no poll data yet → optimistically priority[0]. */
   effective: PlanTier | null;
   fallbackCooldownUntil: number;
   lastCheckAt: number;
@@ -46,39 +59,70 @@ const state: PlanAutoState = {
   lastError: null,
 };
 
+/** Config accessor: the priority list (default mirrors today's behavior). */
+export function planPriorityOf(config: ProxyConfig): PlanTier[] {
+  return config.planPriority ?? DEFAULT_PLAN_PRIORITY;
+}
+
+/** Config accessor: the watched signals of one plan (default = all known). */
+export function planWatchedLimitsOf(config: ProxyConfig, plan: PlanTier): string[] {
+  return config.planSwitchRules?.[plan]?.limits ?? DEFAULT_PLAN_SWITCH_RULES[plan].limits;
+}
+
+/** Config accessor: the watcher poll cadence in ms. */
+export function planPollIntervalMsOf(config: ProxyConfig): number {
+  return (config.planPollIntervalSec ?? DEFAULT_PLAN_POLL_INTERVAL_SEC) * 1000;
+}
+
+/** The next plan after `plan` in the priority list; null when plan is last or unlisted. */
+export function nextPlanInPriority(priority: PlanTier[], plan: PlanTier): PlanTier | null {
+  const at = priority.indexOf(plan);
+  if (at < 0 || at >= priority.length - 1) return null;
+  return priority[at + 1];
+}
+
 /**
  * Plan a request should use. With `planAutoSwitch` off this is exactly
  * `config.plan`; with it on: the watcher's effective plan wins; before the
- * first balance probe lands, start-plan is assumed. Either way, a start-plan
- * request the gateway rejects falls back to the coding plan for that request
- * (see shouldFallbackPlan).
+ * first poll lands, priority[0] is assumed (a cooldown-active fallback target
+ * when the request repair just happened). Either way, a rejected request
+ * falls to the next plan for that request (see shouldFallbackPlan).
  */
 export function activePlan(config: ProxyConfig): PlanTier {
   if (config.planAutoSwitch !== true) return config.plan;
   if (state.effective) return state.effective;
-  if (Date.now() < state.fallbackCooldownUntil) return "coding-plan";
-  return "start-plan";
+  const priority = planPriorityOf(config);
+  if (Date.now() < state.fallbackCooldownUntil) {
+    return nextPlanInPriority(priority, priority[0]) ?? priority[0];
+  }
+  return priority[0];
 }
 
 /**
- * True when the upstream status on a start-plan request should trigger the
- * one-shot coding-plan fallback. Runs regardless of `planAutoSwitch`: the
- * fallback repairs a rejected plan within one request, whether the plan was
- * picked by the watcher or by hand (live 2026-10-06: flag off, start-plan
- * hand-pinned, gateway answered 200 + {"code":1005,"msg":"exceed quota
- * limit"} and the envelope passed through until the operator restarted).
- * 401/402/403: the gateway rejected the plan (bad JWT / no balance).
- * 502/504: the start-plan gateway itself is failing (observed live
- * 2026-10-04 as sustained 504@60s/502@30s stretches). 429: on THIS gateway
- * it is the exhaustion signal, not a load signal (observed live 2026-10-05
- * as seven consecutive 429s with no cooldown escape, because the auto-claim
- * scheduler kept refreshing trial balances while every request was
- * rejected). Other 5xx stay put: generic load/failure signals, not plan
- * failures.
+ * True when the upstream status on a plan request should trigger the one-shot
+ * next-plan fallback. Runs regardless of `planAutoSwitch`: the fallback
+ * repairs a rejected plan within one request, whether the plan was picked by
+ * the watcher or by hand (live 2026-10-06: flag off, start-plan hand-pinned,
+ * gateway answered 200 + {"code":1005,"msg":"exceed quota limit"} and the
+ * envelope passed through until the operator restarted).
+ *
+ * start-plan: 401/402/403 = the gateway rejected the plan (bad JWT / no
+ * balance); 502/504 = the start-plan gateway itself is failing (observed live
+ * 2026-10-04 as sustained 504@60s/502@30s stretches); 429 = on THIS gateway
+ * the exhaustion signal, not load (observed live 2026-10-05 as seven
+ * consecutive 429s with no cooldown escape). Other 5xx stay put: generic
+ * load/failure signals, not plan failures.
+ *
+ * coding-plan: 429 is the limit-exhaustion signal (the watched TIME_LIMIT /
+ * WEEK_LIMIT windows hitting zero surface as 429s from the ultra gateway);
+ * 502/504 are absorbed by the dispatch-level gateway retry and 401/402 are
+ * credential problems switching plans cannot fix.
  */
 export function shouldFallbackPlan(status: number, plan: PlanTier): boolean {
-  if (plan !== "start-plan") return false;
-  return status === 401 || status === 402 || status === 403 || status === 429 || status === 502 || status === 504;
+  if (plan === "start-plan") {
+    return status === 401 || status === 402 || status === 403 || status === 429 || status === 502 || status === 504;
+  }
+  return status === 429;
 }
 
 /** JSON error envelopes larger than this are treated as real payloads, not errors. */
@@ -116,38 +160,42 @@ export async function sniffStartPlanRejection(resp: Response): Promise<{ rejecte
   return { rejected, response: new Response(text, buffered) };
 }
 
-/** Record a fallback: cool down start-plan and pin the effective plan to coding-plan until the watcher reassesses. */
-export function notePlanFallback(onSwitch?: (message: string) => void): void {
+/** Record a fallback: cool the rejected plan down and pin the effective plan to the target until the watcher reassesses. */
+export function notePlanFallback(rejected: PlanTier, target: PlanTier, onSwitch?: (message: string) => void): void {
   state.fallbackCooldownUntil = Date.now() + PLAN_FALLBACK_COOLDOWN_MS;
-  setEffective("coding-plan", `upstream rejected start-plan — cooldown ${Math.round(PLAN_FALLBACK_COOLDOWN_MS / 60_000)}min`, onSwitch);
+  setEffective(target, `upstream rejected ${rejected} — cooldown ${Math.round(PLAN_FALLBACK_COOLDOWN_MS / 60_000)}min`, onSwitch);
 }
 
 export interface PlanFallbackOutcome {
   handled: boolean;
-  /** The coding-plan retry's response; present when `handled` is true. */
+  /** The plan the retry ran on; present when `handled` is true. */
+  target?: PlanTier;
+  /** The retry's response; present when `handled` is true. */
   resp?: Response;
 }
 
 /**
  * Per-request fallback seam (callback shape mirrors retryOnCaptchaChallenge):
- * when the start-plan gateway rejected the request (error status OR a 200
- * JSON error envelope, both detected by the caller), run the caller's
- * coding-plan rebuild + dispatch ONCE and record the cooldown first so
- * concurrent requests skip the broken plan. Runs regardless of
+ * when the serving plan rejected the request (error status OR a 200 JSON
+ * error envelope, both detected by the caller), run the caller's next-plan
+ * rebuild + dispatch ONCE with the target plan and record the cooldown first
+ * so concurrent requests skip the broken plan. Runs regardless of
  * `planAutoSwitch`. `rebuildAndDispatch` errors propagate to the caller,
  * which maps them onto its own 502 path.
  */
 export async function retryOnPlanExhausted(args: {
   rejected: boolean;
   plan: PlanTier;
-  rebuildAndDispatch: () => Promise<Response>;
+  priority: PlanTier[];
+  rebuildAndDispatch: (target: PlanTier) => Promise<Response>;
   onFallback?: (message: string) => void;
 }): Promise<PlanFallbackOutcome> {
   if (!args.rejected) return { handled: false };
-  if (args.plan !== "start-plan") return { handled: false };
-  notePlanFallback(args.onFallback);
-  const resp = await args.rebuildAndDispatch();
-  return { handled: true, resp };
+  const target = nextPlanInPriority(args.priority, args.plan);
+  if (target === null) return { handled: false };
+  notePlanFallback(args.plan, target, args.onFallback);
+  const resp = await args.rebuildAndDispatch(target);
+  return { handled: true, target, resp };
 }
 
 function setEffective(next: PlanTier, reason: string, onSwitch?: (message: string) => void): void {
@@ -167,26 +215,61 @@ export function hasUsableBalance(entries: QuotaBalanceEntry[], nowMs: number = D
   });
 }
 
+/** One watched window is exhausted when remaining hits 0 (used/total as the estimate when remaining is unreported). */
+function codingLimitExhausted(row: QuotaCodingLimit): boolean {
+  if (typeof row.remaining === "number") return row.remaining <= 0;
+  if (typeof row.used === "number" && typeof row.total === "number") return row.used >= row.total;
+  return false; // unreported numbers must not block the plan (fail-open)
+}
+
+/**
+ * True when every watched coding window still has quota. A window with no
+ * matching row (upstream sends fewer rows than we watch) counts as usable:
+ * missing data must not block the plan.
+ */
+export function codingUsable(limits: QuotaCodingLimit[], watchTypes: string[]): boolean {
+  return watchTypes.every((type) => {
+    const row = limits.find((l) => l.type === type);
+    return row === undefined || !codingLimitExhausted(row);
+  });
+}
+
+/**
+ * The plan to serve: the first priority entry whose watched signals still
+ * have quota. When nothing is usable (every plane reports empty AND at least
+ * one probe succeeded — a probe failure never reports unusable), the head of
+ * the priority list serves and the requests get rejected upstream as usual.
+ */
+export function decidePlan(priority: PlanTier[], usable: Record<PlanTier, boolean>): PlanTier {
+  for (const plan of priority) {
+    if (usable[plan]) return plan;
+  }
+  return priority[0];
+}
+
 export interface PlanAutoWatcher {
   stop(): void;
-  /** One balance probe → effective-plan update. Exposed for tests. */
+  /** One quota probe → effective-plan update. Exposed for tests. */
   tick(): Promise<void>;
 }
 
 export interface PlanAutoWatcherDeps {
   fetchImpl?: typeof fetch;
   loadCredentialImpl?: Parameters<typeof fetchStartPlanBalance>[2];
+  /** Override the coding-plane probe (for tests). Defaults to fetchCodingPlanUsage. */
+  fetchCodingPlanUsageImpl?: typeof fetchCodingPlanUsage;
 }
 
 /**
- * Start the background balance watcher. The first probe runs immediately so
- * the optimistic start-plan assumption is corrected within one request; later
- * probes run on a fixed interval. Stop it on shutdown like the claim
- * scheduler (uncleared timers keep the process alive).
+ * Start the background quota watcher. The first probe runs immediately so the
+ * optimistic priority[0] assumption is corrected within one request; later
+ * probes run on `config.planPollIntervalSec`. Stop it on shutdown like the
+ * claim scheduler (uncleared timers keep the process alive).
  */
 export function startPlanAutoWatcher(config: ProxyConfig, deps: PlanAutoWatcherDeps = {}): PlanAutoWatcher {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  const fetchUsage = deps.fetchCodingPlanUsageImpl ?? fetchCodingPlanUsage;
 
   const watcher: PlanAutoWatcher = {
     stop(): void {
@@ -199,39 +282,34 @@ export function startPlanAutoWatcher(config: ProxyConfig, deps: PlanAutoWatcherD
     async tick(): Promise<void> {
       if (stopped) return;
       state.lastCheckAt = Date.now();
-      let result: Awaited<ReturnType<typeof fetchStartPlanBalance>>;
-      try {
-        result = await fetchStartPlanBalance(config, deps.fetchImpl, deps.loadCredentialImpl);
-      } catch (err) {
-        state.lastError = (err as Error).message;
-        return;
+      const errors: string[] = [];
+      const [start, coding] = await Promise.all([
+        fetchStartPlanBalance(config, deps.fetchImpl, deps.loadCredentialImpl).catch((err: Error) => {
+          errors.push(err.message);
+          return null;
+        }),
+        fetchUsage(config, deps.fetchImpl, deps.loadCredentialImpl).catch((err: Error) => {
+          errors.push(err.message);
+          return null;
+        }),
+      ]);
+
+      if (start === null) {
+        // No plan JWT (login pending, e.g. Android before first login) — no
+        // data yet, retry on the next tick.
+        errors.push("no plan JWT (login pending)");
+      } else if (!start.ok) {
+        errors.push(start.error ?? "balance probe failed");
       }
-      if (result === null) {
-        // No plan JWT (login pending, e.g. Android before first login) — stay
-        // on config.plan semantics and retry on the next tick.
-        state.lastError = "no plan JWT (login pending)";
-        return;
-      }
-      if (!result.ok) {
-        state.lastError = result.error ?? "balance probe failed";
-        return;
-      }
-      state.lastError = null;
-      const has = hasUsableBalance(result.balances);
-      // During the fallback cooldown the gateway's balance may still report
-      // credit while requests are actually rejected — hold coding-plan until
-      // the cooldown lapses so the two plans do not flap.
-      const cooling = Date.now() < state.fallbackCooldownUntil;
-      const goStart = has && !cooling;
-      if (goStart) state.fallbackCooldownUntil = 0;
-      setEffective(
-        goStart ? "start-plan" : "coding-plan",
-        goStart
-          ? "start-plan balance available"
-          : has
-            ? "start-plan balance available but fallback cooldown active"
-            : "start-plan balance empty or expired",
-      );
+      // A probe we could not see must never block its plan (fail-open): only
+      // a probe that SUCCEEDED and reports empty marks the plan unusable.
+      const startUsable = start === null || !start.ok ? true : hasUsableBalance(start.balances);
+      const codingUsableNow = coding === null || !coding.ok
+        ? true
+        : codingUsable(coding.limits, planWatchedLimitsOf(config, "coding-plan"));
+
+      state.lastError = errors.length > 0 ? errors.join("; ") : null;
+      applyDecision(config, { "start-plan": startUsable, "coding-plan": codingUsableNow });
     },
   };
 
@@ -240,10 +318,25 @@ export function startPlanAutoWatcher(config: ProxyConfig, deps: PlanAutoWatcherD
     timer = setTimeout(() => {
       timer = null;
       void watcher.tick().finally(scheduleNext);
-    }, PLAN_POLL_INTERVAL_MS);
+    }, planPollIntervalMsOf(config));
   };
   void watcher.tick().finally(scheduleNext);
   return watcher;
+}
+
+/** Apply one poll's verdict, holding the current plan through the fallback cooldown. */
+function applyDecision(config: ProxyConfig, usable: Record<PlanTier, boolean>): void {
+  // During the fallback cooldown the upstream may still report the rejected
+  // plan as available while requests are actually refused — hold the current
+  // effective plan until the cooldown lapses so the two plans do not flap.
+  if (Date.now() < state.fallbackCooldownUntil) return;
+  state.fallbackCooldownUntil = 0;
+  setEffective(decidePlan(planPriorityOf(config), usable), decisionReason(usable));
+}
+
+function decisionReason(usable: Record<PlanTier, boolean>): string {
+  const bits = (["start-plan", "coding-plan"] as PlanTier[]).map((p) => `${p} ${usable[p] ? "usable" : "empty"}`);
+  return `poll: ${bits.join(", ")}`;
 }
 
 /** Restore pristine module state in tests. */

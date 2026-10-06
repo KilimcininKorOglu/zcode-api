@@ -34,6 +34,8 @@ beforeEach(() => {
   delete process.env.ZCODE_MCP_GATEWAY;
   delete process.env.ZCODE_MCP_GATEWAY_ORIGIN;
   delete process.env.ZCODE_PLAN_AUTO_SWITCH;
+  delete process.env.ZCODE_PLAN_PRIORITY;
+  delete process.env.ZCODE_PLAN_POLL_INTERVAL_SEC;
   delete process.env.ZCODE_BATCH_AS_STREAM;
 });
 
@@ -83,6 +85,143 @@ plan: coding-plan
 planAutoSwitch: true
 `);
     expect(loadConfig(path2).planAutoSwitch).toBe(false);
+  });
+});
+
+describe("planPriority", () => {
+  it("defaults to start-plan first when the key is absent", () => {
+    const path = writeYaml(`
+server:
+  port: 9090
+provider: zai
+`);
+    expect(loadConfig(path).planPriority).toEqual(["start-plan", "coding-plan"]);
+  });
+
+  it("loads the priority list from YAML", () => {
+    const path = writeYaml(`
+server:
+  port: 9090
+provider: zai
+planPriority:
+  - coding-plan
+  - start-plan
+`);
+    expect(loadConfig(path).planPriority).toEqual(["coding-plan", "start-plan"]);
+  });
+
+  it("ZCODE_PLAN_PRIORITY (comma-separated) overrides YAML", () => {
+    process.env.ZCODE_PLAN_PRIORITY = "coding-plan, start-plan";
+    const path = writeYaml(`
+server:
+  port: 9090
+provider: zai
+planPriority:
+  - start-plan
+`);
+    expect(loadConfig(path).planPriority).toEqual(["coding-plan", "start-plan"]);
+  });
+
+  it("throws on an unknown tier, a duplicate or an empty list", () => {
+    const mk = (yaml: string): string => writeYaml(`
+server:
+  port: 9090
+provider: zai
+planPriority:
+${yaml}`);
+    expect(() => loadConfig(mk("  - starter-plan"))).toThrow(/Invalid planPriority entry/);
+    expect(() => loadConfig(mk("  - coding-plan\n  - coding-plan"))).toThrow(/more than once/);
+    const empty = writeYaml(`
+server:
+  port: 9090
+provider: zai
+planPriority: []
+`);
+    expect(() => loadConfig(empty)).toThrow(/at least one plan/);
+  });
+});
+
+describe("planSwitchRules", () => {
+  it("defaults to every known signal of each plan", () => {
+    const path = writeYaml(`
+server:
+  port: 9090
+provider: zai
+`);
+    expect(loadConfig(path).planSwitchRules).toEqual({
+      "coding-plan": { limits: ["TIME_LIMIT", "WEEK_LIMIT"] },
+      "start-plan": { limits: ["BALANCE"] },
+    });
+  });
+
+  it("loads per-plan limits and keeps the omitted plan at its default", () => {
+    const path = writeYaml(`
+server:
+  port: 9090
+provider: zai
+planSwitchRules:
+  coding-plan:
+    limits: ["WEEK_LIMIT"]
+`);
+    expect(loadConfig(path).planSwitchRules).toEqual({
+      "coding-plan": { limits: ["WEEK_LIMIT"] },
+      "start-plan": { limits: ["BALANCE"] },
+    });
+  });
+
+  it("throws on an unknown limit name or an empty list", () => {
+    const bad = writeYaml(`
+server:
+  port: 9090
+provider: zai
+planSwitchRules:
+  coding-plan:
+    limits: ["DAILY_LIMIT"]
+`);
+    expect(() => loadConfig(bad)).toThrow(/must be one of TIME_LIMIT, WEEK_LIMIT/);
+    const empty = writeYaml(`
+server:
+  port: 9090
+provider: zai
+planSwitchRules:
+  start-plan:
+    limits: []
+`);
+    expect(() => loadConfig(empty)).toThrow(/must not be empty/);
+  });
+});
+
+describe("planPollIntervalSec", () => {
+  it("defaults to 30 seconds when the key is absent", () => {
+    const path = writeYaml(`
+server:
+  port: 9090
+provider: zai
+`);
+    expect(loadConfig(path).planPollIntervalSec).toBe(30);
+  });
+
+  it("loads from YAML and lets ZCODE_PLAN_POLL_INTERVAL_SEC override", () => {
+    const path = writeYaml(`
+server:
+  port: 9090
+provider: zai
+planPollIntervalSec: 60
+`);
+    expect(loadConfig(path).planPollIntervalSec).toBe(60);
+
+    process.env.ZCODE_PLAN_POLL_INTERVAL_SEC = "15";
+    expect(loadConfig(path).planPollIntervalSec).toBe(15);
+  });
+
+  it("throws on a non-positive value", () => {
+    const path = writeYaml(`
+server:
+  port: 9090
+provider: zai
+planPollIntervalSec: 0
+`);
+    expect(() => loadConfig(path)).toThrow(/must be a positive integer/);
   });
 });
 

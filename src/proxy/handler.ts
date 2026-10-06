@@ -24,7 +24,7 @@ import { credentialString } from "../auth/types.js";
 import { sendOrderedUpstreamRequest, orderedAdvertisedCodings } from "./ordered-transport.js";
 import { transformRequestBody } from "./body-transformer.js";
 import { isCaptchaChallenged, retryOnCaptchaChallenge } from "./captcha-retry.js";
-import { activePlan, retryOnPlanExhausted, sniffStartPlanRejection, shouldFallbackPlan, type PlanTier } from "../plan/auto.js";
+import { activePlan, planPriorityOf, retryOnPlanExhausted, sniffStartPlanRejection, shouldFallbackPlan, type PlanTier } from "../plan/auto.js";
 import { clientTraceFields, type ClientSessionResult } from "./client-session.js";
 import { resolveSessionContext } from "./session-context.js";
 import { randomBytes } from "node:crypto";
@@ -360,15 +360,15 @@ export async function proxyRequest(
     });
   }
 
-  // Hybrid plan fallback: the start-plan gateway rejected the request
-  // (rejected JWT / exhausted trial balance). Retry the SAME request once on
-  // the coding plan and cool start-plan down until the balance watcher sees
-  // credits again. Body + headers rebuild with the coding plan — the body
-  // transform (start-plan system) and the auth builder (JWT vs API key) are
-  // both plan-aware. Runs regardless of planAutoSwitch: a hand-pinned
-  // start-plan gets the same one-request repair. Rejection covers error
-  // statuses AND HTTP 200 with a JSON error envelope — the gateway exhausts
-  // a plan that way too (observed live 2026-10-06: 200 +
+  // Hybrid plan fallback: the serving plan's gateway rejected the request
+  // (rejected auth / exhausted quota). Retry the SAME request once on the
+  // NEXT plan in config.planPriority and cool the rejected plan down until
+  // the watcher sees it usable again. Body + headers rebuild with the target
+  // plan — the body transform (start-plan system) and the auth builder (JWT
+  // vs API key) are both plan-aware. Runs regardless of planAutoSwitch: a
+  // hand-pinned plan gets the same one-request repair. Rejection covers error
+  // statuses AND, on start-plan, HTTP 200 with a JSON error envelope — that
+  // gateway exhausts a plan that way too (observed live 2026-10-06: 200 +
   // {"code":1005,"msg":"exceed quota limit"}).
   let planRejected = shouldFallbackPlan(upstreamResp.status, plan);
   if (!planRejected && plan === "start-plan" && upstreamResp.status === 200) {
@@ -380,23 +380,24 @@ export async function proxyRequest(
     const outcome = await retryOnPlanExhausted({
       rejected: planRejected,
       plan,
+      priority: planPriorityOf(config),
       onFallback: (message) => {
         console.log(`${reqId} ${message}`);
         appendErrorLog({ kind: "plan_fallback", reqId, message, ...clientTraceFields(clientReq) });
       },
-      rebuildAndDispatch: () => {
-        transformedBody = transformRequestBody(upstreamBody, { format: upstreamFormat, metadataUserId, startPlan: false, provider: config.provider });
-        upstreamHeaderPairs = buildUpstreamHeaderPairs(clientReq, upstreamFormat, cred, config.identity, "coding-plan", undefined, clientSession);
+      rebuildAndDispatch: (target) => {
+        transformedBody = transformRequestBody(upstreamBody, { format: upstreamFormat, metadataUserId, startPlan: target === "start-plan", provider: config.provider });
+        upstreamHeaderPairs = buildUpstreamHeaderPairs(clientReq, upstreamFormat, cred, config.identity, target, undefined, clientSession);
         if (useOrderedTransport && translateMode) {
           upstreamHeaderPairs = capOrderedAcceptEncoding(upstreamHeaderPairs);
         }
-        upstreamReq = buildUpstreamRequest(clientReq, upstreamFormat, provider, cred, transformedBody, config.identity, "coding-plan", undefined, clientSession);
+        upstreamReq = buildUpstreamRequest(clientReq, upstreamFormat, provider, cred, transformedBody, config.identity, target, undefined, clientSession);
         return dispatch(upstreamReq, upstreamHeaderPairs);
       },
     });
     if (outcome.handled && outcome.resp) {
-      plan = "coding-plan";
-      startPlan = false;
+      plan = outcome.target ?? plan;
+      startPlan = plan === "start-plan";
       meta.plan = plan;
       upstreamResp = outcome.resp;
     }

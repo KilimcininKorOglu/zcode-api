@@ -68,7 +68,7 @@ import {
 } from "../translator/responses-types.js";
 import { ResponseStore, type StoredResponse } from "../responses/store.js";
 import { errorResponse, readBody, InflatedBodyTooLargeError } from "./handler.js";
-import { activePlan, retryOnPlanExhausted, shouldFallbackPlan, sniffStartPlanRejection, type PlanTier } from "../plan/auto.js";
+import { activePlan, planPriorityOf, retryOnPlanExhausted, shouldFallbackPlan, sniffStartPlanRejection, type PlanTier } from "../plan/auto.js";
 
 export interface ResponsesHandlerOptions {
   config: ProxyConfig;
@@ -287,12 +287,13 @@ export async function handleResponses(
     return errorResponse(502, "upstream_unreachable", (err as Error).message);
   }
 
-  // Hybrid plan auto-switch (mirrors handler.ts): on a start-plan rejection
-  // retry the SAME request once on the coding plan — body, headers and URL
-  // all rebuild with the coding plan (the start-plan system prompt and the
-  // JWT auth are both baked into the start-plan variants). Runs before the
-  // captcha retry so a dead plan never spends a pooled token. Rejection
-  // covers error statuses AND HTTP 200 with a JSON error envelope.
+  // Hybrid plan auto-switch (mirrors handler.ts): on a rejected plan retry
+  // the SAME request once on the NEXT plan in config.planPriority — body,
+  // headers and URL all rebuild with the target plan (the start-plan system
+  // prompt and the JWT auth are both baked into the start-plan variants).
+  // Runs before the captcha retry so a dead plan never spends a pooled
+  // token. Rejection covers error statuses AND, on start-plan, HTTP 200 with
+  // a JSON error envelope.
   let planRejected = shouldFallbackPlan(upstreamResp.status, plan);
   if (!planRejected && plan === "start-plan" && upstreamResp.status === 200) {
     const sniff = await sniffStartPlanRejection(upstreamResp);
@@ -303,25 +304,26 @@ export async function handleResponses(
     const outcome = await retryOnPlanExhausted({
       rejected: planRejected,
       plan,
+      priority: planPriorityOf(opts.config),
       onFallback: (message) => {
         console.log(`[responses] ${message}`);
         appendErrorLog({ kind: "plan_fallback", reqId: "[responses]", message, ...traceFields });
       },
-      rebuildAndDispatch: () => {
+      rebuildAndDispatch: (target) => {
         transformedBody = transformRequestBody(anthropicJson, {
           format: "anthropic",
           metadataUserId,
-          startPlan: false,
+          startPlan: target === "start-plan",
           provider: opts.config.provider,
         }) ?? anthropicJson;
-        upstreamHeaders = buildUpstreamHeaderPairs(clientReq, upstreamFormat, cred, opts.config.identity, "coding-plan", undefined, undefined);
-        upstreamReq = buildUpstreamRequest(clientReq, upstreamFormat, providerDef, cred, transformedBody, opts.config.identity, "coding-plan", undefined, undefined);
+        upstreamHeaders = buildUpstreamHeaderPairs(clientReq, upstreamFormat, cred, opts.config.identity, target, undefined, undefined);
+        upstreamReq = buildUpstreamRequest(clientReq, upstreamFormat, providerDef, cred, transformedBody, opts.config.identity, target, undefined, undefined);
         return dispatch(upstreamHeaders);
       },
     });
     if (outcome.handled && outcome.resp) {
-      plan = "coding-plan";
-      startPlan = false;
+      plan = outcome.target ?? plan;
+      startPlan = plan === "start-plan";
       upstreamResp = outcome.resp;
     }
   }

@@ -249,6 +249,71 @@ describe("proxyRequest — hybrid plan fallback", () => {
     expect(activePlan(config)).toBe("start-plan");
   });
 
+  it("retries a coding-plan 429 on start-plan when it is not last in priority (flag off)", async () => {
+    // Coding-first config: the ultra gateway's 429 (the watched windows
+    // emptying) must send the SAME request once to the start-plan gateway
+    // (JWT auth + start-plan system prompt), independent of planAutoSwitch.
+    const calls: RecordedCall[] = [];
+    const config: ProxyConfig = {
+      ...TEST_CONFIG,
+      plan: "coding-plan",
+      planAutoSwitch: false,
+      planPriority: ["coding-plan", "start-plan"],
+    };
+    const fetchImpl = Object.assign(
+      (async (req: Request): Promise<Response> => {
+        calls.push({
+          url: req.url,
+          authorization: req.headers.get("authorization"),
+          apiKey: req.headers.get("x-api-key"),
+          body: await req.clone().text(),
+        });
+        if (req.url.includes("/api/v1/zcode-plan/")) {
+          return new Response(ANTHROPIC_OK, { status: 200, headers: { "content-type": "application/json" } });
+        }
+        return new Response("rate limited", { status: 429 });
+      }) as typeof fetch,
+      { preconnect: () => {} },
+    ) as typeof fetch;
+    const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0].url).toContain("https://api.z.ai/api/anthropic");
+    expect(calls[0].apiKey).toBe("key-mock");
+    expect(calls[1].url).toContain("https://zcode.z.ai/api/v1/zcode-plan/");
+    expect(calls[1].authorization).toBe("Bearer jwt-mock");
+    // The start-plan retry must re-transform the RAW client body WITH the
+    // start-plan system prompt (mirrors the normal start-plan request shape).
+    expect(JSON.parse(calls[1].body).system).toBeDefined();
+    expect(resp.status).toBe(200);
+    // Flag off: config.plan still governs the NEXT request; only this one was
+    // repaired.
+    expect(activePlan(config)).toBe("coding-plan");
+  });
+
+  it("does not fall back when the serving plan is last in priority", async () => {
+    // Default priority puts coding-plan last: a 429 there has no next plan,
+    // so the failure passes through untouched (one upstream hit).
+    const calls: RecordedCall[] = [];
+    const config: ProxyConfig = { ...TEST_CONFIG, plan: "coding-plan", planAutoSwitch: false };
+    const fetchImpl = Object.assign(
+      (async (req: Request): Promise<Response> => {
+        calls.push({
+          url: req.url,
+          authorization: req.headers.get("authorization"),
+          apiKey: req.headers.get("x-api-key"),
+          body: await req.clone().text(),
+        });
+        return new Response("rate limited", { status: 429 });
+      }) as typeof fetch,
+      { preconnect: () => {} },
+    ) as typeof fetch;
+    const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
+
+    expect(calls).toHaveLength(1);
+    expect(resp.status).toBe(429);
+  });
+
   it("falls back to the coding plan when the start-plan gateway 504s (live outage shape)", async () => {
     // 2026-10-04 outage: the start-plan gateway answered every request with
     // LB 504@60s/502@30s for ~10 minutes; the plan fallback only knew

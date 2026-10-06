@@ -100,18 +100,36 @@ export function watchConfigFile(
 /**
  * Bring the start/stop-on-config jobs in line with the freshly applied
  * config. A dirty `claim` block restarts the scheduler even when it keeps
- * running, so pollIntervalMs / cooldownMs changes reach the running job.
+ * running, so pollIntervalMs / cooldownMs changes reach the running job; the
+ * same applies to the plan watcher's poll interval.
  */
 function reconcileJobs(handles: ConfigWatchHandles, config: ProxyConfig, changed: Set<string>): void {
-  const wantClaim = config.claim.enabled && config.claim.auto;
-  if (wantClaim && (changed.has("claim") || !handles.claimRunning())) handles.startClaim();
-  if (!wantClaim && handles.claimRunning()) handles.stopClaim();
-
-  const wantPlanWatcher = config.planAutoSwitch === true;
-  if (wantPlanWatcher && !handles.planWatcherRunning()) handles.startPlanWatcher();
-  if (!wantPlanWatcher && handles.planWatcherRunning()) handles.stopPlanWatcher();
+  reconcileClaimJobs(handles, config, changed);
+  reconcilePlanWatcherJobs(handles, config, changed);
 
   if (config.plan === "start-plan") handles.warmCaptchaPool();
+}
+
+function reconcileClaimJobs(handles: ConfigWatchHandles, config: ProxyConfig, changed: Set<string>): void {
+  reconcileToggleJob(config.claim.enabled && config.claim.auto, changed.has("claim"), handles.claimRunning(), handles.startClaim, handles.stopClaim);
+}
+
+function reconcilePlanWatcherJobs(handles: ConfigWatchHandles, config: ProxyConfig, changed: Set<string>): void {
+  // A dirty poll interval restarts the watcher even when it keeps running,
+  // so the new cadence reaches the running timer (claim-block pattern).
+  reconcileToggleJob(
+    config.planAutoSwitch === true,
+    changed.has("planAutoSwitch") || changed.has("planPollIntervalSec"),
+    handles.planWatcherRunning(),
+    handles.startPlanWatcher,
+    handles.stopPlanWatcher,
+  );
+}
+
+/** Start-or-stop one toggle job: start when wanted and (dirty or not running), stop when unwanted but running. */
+function reconcileToggleJob(want: boolean, dirty: boolean, running: boolean, start: () => void, stop: () => void): void {
+  if (want && (dirty || !running)) start();
+  if (!want && running) stop();
 }
 
 function stableEqual(a: unknown, b: unknown): boolean {

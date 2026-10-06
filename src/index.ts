@@ -409,7 +409,7 @@ export function createServeJobs(
       .then((m) => {
         planPending = false;
         planWatcher = m.startPlanAutoWatcher(config);
-        console.log(`${indent}plan auto-switch: ON (prefer start-plan while it has balance; poll ${Math.round(m.PLAN_POLL_INTERVAL_MS / 1000)}s${note})`);
+        console.log(`${indent}plan auto-switch: ON (priority ${m.planPriorityOf(config).join(" > ")}; poll ${Math.round(m.planPollIntervalMsOf(config) / 1000)}s${note})`);
       })
       .catch((err) => {
         planPending = false;
@@ -525,7 +525,7 @@ async function serve(configPath: string | undefined, debug: boolean): Promise<vo
   // (see config/watch.ts). `server` (port/host) still needs a restart.
   const configWatcher = watchConfigFile(path, config, jobs.handles);
   console.log(`  provider: ${config.provider}`);
-  console.log(`  plan: ${config.plan}${config.planAutoSwitch ? " (auto-switch on: prefers start-plan while it has balance)" : ""}`);
+  console.log(`  plan: ${config.plan}${config.planAutoSwitch ? ` (auto-switch on: priority ${(config.planPriority ?? ["start-plan", "coding-plan"]).join(" > ")})` : ""}`);
   console.log(`  models: ${config.models.length} available`);
   if (config.responses.enabled) console.log(`  /v1/responses: ON`);
   if (config.async.enabled) {

@@ -23,7 +23,7 @@ so Claude Code, Codex, Silly Tavern ... can all use your plan quota directly.
 - 📱 **Android app** —— start/stop the proxy on your phone, watch live logs, switch providers, handy when away from your desk.
 - 💬 **Built-in web chat** —— open `/webui` for a local ChatGPT-style chat page to test models quickly.
 - 🌙 **Idle channel & instant plan claiming** (optional) —— a free off-peak compute channel plus automatic claiming of limited trial plans, both built in.
-- 🔀 **Hybrid plan auto-switch** (optional) —— holding both a trial start-plan and a personal coding-plan? The proxy spends the expiring trial credits first and falls back to the coding plan automatically when they run out (`planAutoSwitch`).
+- 🔀 **Hybrid plan auto-switch** (optional) —— holding both a trial start-plan and a personal coding-plan? Pick the serving order yourself with `planPriority`: spend the expiring trial credits first, or keep the coding plan primary and drop to the trial when its 5-hour / weekly window empties (`planAutoSwitch`).
 - 🔌 **In-plan MCP relay** —— relays ZCode official plugin MCPs (Tianyancha / Wind / Tonghuashun iFinD ...) to local `/mcp/*` (requires coding-plan login, `GET /mcp` lists them); the built-in web chat can also attach your own MCP servers as model tools.
 - 🪟 **All platforms** —— Windows / macOS / Linux from one codebase; also compiles to a single-file binary or Docker deployment.
 
@@ -167,7 +167,7 @@ docker compose run --rm zcode-proxy bun run src/index.ts auth login zai
 docker compose up -d --build
 ```
 
-Tune the running container through `docker-data/config.yaml` (auto-created on first start, fully commented): set `planAutoSwitch: true` there for the hybrid plan auto-switch, then `docker compose restart`. Updating later is `git pull && docker compose up -d --build` (build + recreate in one command).
+Tune the running container through `docker-data/config.yaml` (auto-created on first start, fully commented): set `planAutoSwitch: true` there for the hybrid plan auto-switch (applies live, no restart needed). Updating later is `git pull && docker compose up -d --build` (build + recreate in one command).
 
 **Or use the prebuilt image** without cloning (multi-arch amd64 / arm64, runs as `bun` user):
 
@@ -208,7 +208,9 @@ The config file is `config.yaml` in the project root (auto-generated on first la
 | `ZCODE_PROXY_PORT`              | `8080`           | Listen port                                                                                                                      |
 | `ZCODE_PROXY_API_KEY`           | none             | Key clients use to access the proxy (unset = no check)                                                                           |
 | `ZCODE_PROVIDER`                | `zai`            | Provider `zai` / `bigmodel`                                                                                                      |
-| `ZCODE_PLAN_AUTO_SWITCH`        | off              | Set to `1`/`true` for the hybrid plan auto-switch (`planAutoSwitch`): prefer the start-plan entitlement while it has balance. Requests a plan rejects fall back to the coding plan either way, flag on or off |
+| `ZCODE_PLAN_AUTO_SWITCH`        | off              | Set to `1`/`true` for the hybrid plan auto-switch (`planAutoSwitch`): the watcher keeps traffic on the first plan in `planPriority` whose watched signals still have quota. Requests a plan rejects fall to the next plan either way, flag on or off |
+| `ZCODE_PLAN_PRIORITY`           | `start-plan, coding-plan` | Comma-separated plan preference order for the auto-switch (`planPriority`); e.g. `coding-plan, start-plan` to keep the coding plan primary |
+| `ZCODE_PLAN_POLL_INTERVAL_SEC`  | `30`             | Auto-switch poll interval in seconds (`planPollIntervalSec`) |
 | `ZCODE_BATCH_AS_STREAM`         | on               | Set to `0`/`false` to disable `batchAsStream`: batch (non-streaming) requests are sent upstream as streams and reassembled into one JSON, because the upstream gateway kills silent non-streaming requests past ~180s (symptom: 502 after exactly ~3 minutes) |
 | `ZCODE_PROXY_CONFIG`            | `config.yaml`    | Config file path                                                                                                                 |
 | `ZCODE_PROXY_CREDENTIAL_SECRET` | machine-specific | Encryption seed for login credentials (pin it for cross-machine moves / Docker)                                                  |
@@ -222,7 +224,22 @@ The config file is `config.yaml` in the project root (auto-generated on first la
 
 Plan type (`plan`: `coding-plan` personal / `start-plan` trial) can be toggled with <kbd>t</kbd> in the panel and is written back to config.yaml.
 
-**Editing config.yaml without a restart**: the running proxy watches the file and applies edits in place (watch for the `[config] reloaded: ...` log line). Flipping `claim.auto`, `planAutoSwitch` or `plan` also starts or stops the matching background job; a broken file keeps the running config and stays watching. Only `server` (port/host) needs a restart.
+**Coding-first auto-switch** (the "5-hour limit ran out, move me to the trial" setup): with `planAutoSwitch: true`, set in config.yaml
+
+```yaml
+planPriority:
+  - coding-plan
+  - start-plan
+planSwitchRules:
+  coding-plan:
+    limits: ["TIME_LIMIT", "WEEK_LIMIT"]   # the 5h / weekly windows that trigger the switch
+  start-plan:
+    limits: ["BALANCE"]
+```
+
+The watcher polls both plans' quota (`planPollIntervalSec`, default 30) and serves the first plan in `planPriority` whose watched signals still have quota; a request the plan rejects also falls to the next plan for that one request, `planAutoSwitch` on or off.
+
+**Editing config.yaml without a restart**: the running proxy watches the file and applies edits in place (watch for the `[config] reloaded: ...` log line). Flipping `claim.auto`, `planAutoSwitch` or `plan` also starts or stops the matching background job, and changing `planPollIntervalSec` restarts the watcher with the new cadence; a broken file keeps the running config and stays watching. Only `server` (port/host) needs a restart.
 
 For servers without a TUI, use a browser instead: set `ZCODE_PANEL_ENABLED=1` and `ZCODE_PANEL_TOKEN=<your-own-random-string>`, start, then forward `http://127.0.0.1:8090` over SSH — you can view status and quota, switch provider/plan, log in/out, watch live logs and the MCP list. The panel binds loopback only, requires the token on every API call, and never starts without a token; commands are dispatched in-process so no extra control port is opened. "Stop proxy" on the panel only stops the proxy — the process itself still exits cleanly (SIGTERM/SIGINT and panel shutdown both clear background timers — auto-claim, captcha pool — before exit); logging out from the panel also clears the running credential and stops the proxy so new requests cannot keep spending the old account's quota.
 
@@ -259,7 +276,7 @@ Then open `http://127.0.0.1:8090`. In host mode the main proxy port also occupie
 
 **Weekend/trial plan auto-claim (claim)** —— enabled by default. Every 5 minutes the proxy probes the vendor's limited plan campaign page and auto-claims for you the moment a new offer drops (`claim.enabled: false` disables it). Manual claim: `bun run src/index.ts claim`.
 
-**Hybrid plan auto-switch (`planAutoSwitch`)** —— pairs with auto-claim. Accounts can hold both a trial start-plan (points bucket, expires) and a personal coding-plan (rolling windows, resets). Off by default the static `plan` config applies as-is; with `planAutoSwitch: true` in config (or `ZCODE_PLAN_AUTO_SWITCH=1`), a background watcher polls `billing/balance` every 5 minutes and routes requests to the start-plan while it still has unexpired balance. If the start-plan gateway rejects a request (401/402/403, HTTP 200 carrying a JSON error envelope — the shape exhaustion takes in the wild, or the start-plan gateway itself failing with 502/504), the same request is retried once on the coding plan and start-plan cools down for 10 minutes until the watcher sees balance again — so trial credits are never wasted, and coding-plan requests are never blocked by a broken trial tier. Separately from the plan tiers, a complete upstream load-balancer failure (502/504) is retried once before it can reach the client. The TUI plan card shows the tier requests actually use with an `(auto)` marker, and the request log row carries a Plan column (`start-plan` / `coding-plan`).
+**Hybrid plan auto-switch (`planAutoSwitch`)** —— pairs with auto-claim. Accounts can hold both a trial start-plan (points bucket, expires) and a personal coding-plan (rolling windows, resets). Off by default the static `plan` config applies as-is; with `planAutoSwitch: true` in config (or `ZCODE_PLAN_AUTO_SWITCH=1`), a background watcher polls both quota planes (`planPollIntervalSec`, default 30s: `billing/balance` for the trial and the `/api/monitor/usage/quota/limit` windows for the coding plan) and routes requests to the first plan in `planPriority` (default `start-plan, coding-plan`; flip it to coding-first with `ZCODE_PLAN_PRIORITY` or the config list) whose watched signals still have quota — `planSwitchRules` narrows which signals count (the trial `BALANCE`, the coding-plan `TIME_LIMIT` 5-hour / `WEEK_LIMIT` weekly windows). If the serving plan's gateway rejects a request (start-plan: 401/402/403, HTTP 200 carrying a JSON error envelope — the shape exhaustion takes in the wild, 502/504; coding-plan: a 429 from an emptied window), the same request is retried once on the next plan in the priority list and the rejected plan cools down for 10 minutes until the watcher sees it usable again — so trial credits are never wasted, and coding-plan requests are never blocked by a broken trial tier. Separately from the plan tiers, a complete upstream load-balancer failure (502/504) is retried once before it can reach the client. The TUI plan card shows the tier requests actually use with an `(auto)` marker, and the request log row carries a Plan column (`start-plan` / `coding-plan`).
 
 **Quota display (quota)** —— after login the panel queries quota once automatically, then press <kbd>r</kbd> to refresh manually. Data comes from two upstream quota planes: the points bucket for trial/points-based plans (`billing/balance`, remaining / total, expiry), and the usage window for personal coding plans (`/api/monitor/usage/quota/limit`, same source as the official usage panel, **remaining quota** and reset time for the 5-hour / weekly windows — upstream `number` is not a comparable total, so CLI/TUI consistently show only the remainder and draw a ratio bar only when upstream provides a percentage). Query from CLI directly: `bun run src/index.ts quota` (HTTP equivalent `GET /quota`). Note upstream gateways rate-limit frequent queries, so the panel does no timed polling.
 

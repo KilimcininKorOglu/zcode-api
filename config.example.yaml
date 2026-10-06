@@ -21,12 +21,35 @@ provider: zai
 #   "start-plan"            — routes through zcode.z.ai with JWT auth (requires `auth login`)
 plan: coding-plan
 
-# Hybrid plan auto-switch: while on, the proxy prefers the start-plan (trial)
-# entitlement while it has balance and switches to the coding plan
-# automatically when it runs out (periodic balance poll + per-request
-# fallback). The `plan` key above then only applies while this is off.
+# Hybrid plan auto-switch: while on, the watcher keeps traffic on the first
+# plan in `planPriority` whose watched signals still have quota. The `plan`
+# key above then only applies while this is off. A rejected request still
+# falls to the next plan for that one request either way.
 # Env override: ZCODE_PLAN_AUTO_SWITCH
 planAutoSwitch: false
+
+# Plan preference order for the auto-switch: the first plan with quota
+# serves every request. Defaults to [start-plan, coding-plan] (prefer the
+# trial). Coding-first example below: the coding plan serves until its 5-hour
+# (TIME_LIMIT) or weekly (WEEK_LIMIT) window empties, then start-plan takes
+# over. Env override: ZCODE_PLAN_PRIORITY (comma-separated).
+# planPriority:
+#   - coding-plan
+#   - start-plan
+
+# Which signals make each plan "not enough" for the switch (the first plan
+# in planPriority whose watched signals still have quota serves). coding-plan
+# rows are monitor-plane window types (TIME_LIMIT = 5h, WEEK_LIMIT = weekly);
+# start-plan watches the trial BALANCE. Omitted plan = watch every signal.
+# planSwitchRules:
+#   coding-plan:
+#     limits: ["TIME_LIMIT", "WEEK_LIMIT"]
+#   start-plan:
+#     limits: ["BALANCE"]
+
+# Auto-switch poll interval in seconds (default 30; a change applies live).
+# Env override: ZCODE_PLAN_POLL_INTERVAL_SEC
+# planPollIntervalSec: 30
 
 providers:
   zai:
