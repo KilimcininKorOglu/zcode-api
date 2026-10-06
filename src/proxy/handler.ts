@@ -360,17 +360,18 @@ export async function proxyRequest(
     });
   }
 
-  // Hybrid plan auto-switch: the start-plan gateway rejected the request
+  // Hybrid plan fallback: the start-plan gateway rejected the request
   // (rejected JWT / exhausted trial balance). Retry the SAME request once on
   // the coding plan and cool start-plan down until the balance watcher sees
   // credits again. Body + headers rebuild with the coding plan — the body
   // transform (start-plan system) and the auth builder (JWT vs API key) are
-  // both plan-aware. No-op unless planAutoSwitch is on and the plan is
-  // start-plan. Rejection covers error statuses AND HTTP 200 with a JSON
-  // error envelope — the gateway exhausts a plan that way too (observed live:
-  // 200 + non-Anthropic JSON, the client saw "0 stream events").
-  let planRejected = shouldFallbackPlan(upstreamResp.status, plan, config);
-  if (!planRejected && config.planAutoSwitch === true && plan === "start-plan" && upstreamResp.status === 200) {
+  // both plan-aware. Runs regardless of planAutoSwitch: a hand-pinned
+  // start-plan gets the same one-request repair. Rejection covers error
+  // statuses AND HTTP 200 with a JSON error envelope — the gateway exhausts
+  // a plan that way too (observed live 2026-10-06: 200 +
+  // {"code":1005,"msg":"exceed quota limit"}).
+  let planRejected = shouldFallbackPlan(upstreamResp.status, plan);
+  if (!planRejected && plan === "start-plan" && upstreamResp.status === 200) {
     const sniff = await sniffStartPlanRejection(upstreamResp);
     planRejected = sniff.rejected;
     upstreamResp = sniff.response;
@@ -379,7 +380,6 @@ export async function proxyRequest(
     const outcome = await retryOnPlanExhausted({
       rejected: planRejected,
       plan,
-      config,
       onFallback: (message) => {
         console.log(`${reqId} ${message}`);
         appendErrorLog({ kind: "plan_fallback", reqId, message, ...clientTraceFields(clientReq) });

@@ -48,9 +48,10 @@ const state: PlanAutoState = {
 
 /**
  * Plan a request should use. With `planAutoSwitch` off this is exactly
- * `config.plan` (zero behavior change). With it on: the watcher's effective
- * plan wins; before the first balance probe lands, start-plan is assumed
- * (the per-request fallback corrects a wrong guess in one request).
+ * `config.plan`; with it on: the watcher's effective plan wins; before the
+ * first balance probe lands, start-plan is assumed. Either way, a start-plan
+ * request the gateway rejects falls back to the coding plan for that request
+ * (see shouldFallbackPlan).
  */
 export function activePlan(config: ProxyConfig): PlanTier {
   if (config.planAutoSwitch !== true) return config.plan;
@@ -61,19 +62,21 @@ export function activePlan(config: ProxyConfig): PlanTier {
 
 /**
  * True when the upstream status on a start-plan request should trigger the
- * one-shot coding-plan fallback. 401/402/403: the gateway rejected the plan
- * (bad JWT / no balance). 502/504: the start-plan gateway itself is failing
- * (LB timeout / dead backend — observed live 2026-10-04 as sustained
- * 504@60s/502@30s stretches), and coding-plan serves the request while the
- * cooldown keeps traffic off the sick gateway. 429: on THIS gateway it is the
- * exhaustion signal, not a load signal — observed live 2026-10-05 as seven
- * consecutive 429s with no cooldown escape, because the auto-claim scheduler
- * kept refreshing trial balances and the watcher read "balance available" on
- * every poll while every request was rejected. Other 5xx stay put: they are
- * generic load/failure signals, not plan failures.
+ * one-shot coding-plan fallback. Runs regardless of `planAutoSwitch`: the
+ * fallback repairs a rejected plan within one request, whether the plan was
+ * picked by the watcher or by hand (live 2026-10-06: flag off, start-plan
+ * hand-pinned, gateway answered 200 + {"code":1005,"msg":"exceed quota
+ * limit"} and the envelope passed through until the operator restarted).
+ * 401/402/403: the gateway rejected the plan (bad JWT / no balance).
+ * 502/504: the start-plan gateway itself is failing (observed live
+ * 2026-10-04 as sustained 504@60s/502@30s stretches). 429: on THIS gateway
+ * it is the exhaustion signal, not a load signal (observed live 2026-10-05
+ * as seven consecutive 429s with no cooldown escape, because the auto-claim
+ * scheduler kept refreshing trial balances while every request was
+ * rejected). Other 5xx stay put: generic load/failure signals, not plan
+ * failures.
  */
-export function shouldFallbackPlan(status: number, plan: PlanTier, config: ProxyConfig): boolean {
-  if (config.planAutoSwitch !== true) return false;
+export function shouldFallbackPlan(status: number, plan: PlanTier): boolean {
   if (plan !== "start-plan") return false;
   return status === 401 || status === 402 || status === 403 || status === 429 || status === 502 || status === 504;
 }
@@ -130,18 +133,17 @@ export interface PlanFallbackOutcome {
  * when the start-plan gateway rejected the request (error status OR a 200
  * JSON error envelope, both detected by the caller), run the caller's
  * coding-plan rebuild + dispatch ONCE and record the cooldown first so
- * concurrent requests skip the broken plan. `rebuildAndDispatch` errors
- * propagate to the caller, which maps them onto its own 502 path.
+ * concurrent requests skip the broken plan. Runs regardless of
+ * `planAutoSwitch`. `rebuildAndDispatch` errors propagate to the caller,
+ * which maps them onto its own 502 path.
  */
 export async function retryOnPlanExhausted(args: {
   rejected: boolean;
   plan: PlanTier;
-  config: ProxyConfig;
   rebuildAndDispatch: () => Promise<Response>;
   onFallback?: (message: string) => void;
 }): Promise<PlanFallbackOutcome> {
   if (!args.rejected) return { handled: false };
-  if (args.config.planAutoSwitch !== true) return { handled: false };
   if (args.plan !== "start-plan") return { handled: false };
   notePlanFallback(args.onFallback);
   const resp = await args.rebuildAndDispatch();

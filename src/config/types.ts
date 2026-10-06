@@ -216,9 +216,11 @@ export interface ProxyConfig {
   /**
    * Hybrid plan auto-switch: prefer the start-plan (trial) entitlement while it
    * has balance and switch to the coding plan automatically when it runs out
-   * (periodic balance poll plus a per-request fallback retry). When off or
-   * omitted, `plan` above is used exactly as configured. `loadConfig` always
-   * sets this; fixtures may omit it.
+   * (periodic balance poll). When off or omitted, `plan` above is used exactly
+   * as configured — and a start-plan request the gateway rejects (error status
+   * or a 200 quota envelope) still falls back to the coding plan for that
+   * request, flag on or off. `loadConfig` always sets this; fixtures may omit
+   * it.
    */
   planAutoSwitch?: boolean;
   /**

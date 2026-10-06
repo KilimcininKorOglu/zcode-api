@@ -318,7 +318,10 @@ describe("handleResponses captcha (start-plan)", () => {
     expect(seen).toEqual(["token-1", "token-2"]);
   });
 
-  it("retries when the challenge arrives as a response header", async () => {
+  it("falls back to the coding plan when a start-plan 403 carries a challenge header", async () => {
+    // The plan fallback outranks the captcha retry: a challenged 403 means the
+    // plan is gone, so the request completes on the coding plan (which needs
+    // no captcha) instead of burning a pooled token on a solve.
     const seen: (string | null)[] = [];
     const fetchImpl = (async (request: Request): Promise<Response> => {
       seen.push(request.headers.get(PARAM_HEADER));
@@ -333,7 +336,9 @@ describe("handleResponses captcha (start-plan)", () => {
       config: START_PLAN, auth, fetchImpl, captcha: captcha.module,
     });
     expect(resp.status).toBe(200);
-    expect(seen).toEqual(["token-1", "token-2"]);
+    // First call carries the pre-minted captcha token; the coding-plan retry
+    // goes out without one (null).
+    expect(seen).toEqual(["token-1", null]);
   });
 
   it("gives up after one retry instead of looping", async () => {

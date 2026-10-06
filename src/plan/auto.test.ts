@@ -73,33 +73,24 @@ describe("activePlan", () => {
 });
 
 describe("shouldFallbackPlan", () => {
-  it("never falls back when planAutoSwitch is off", () => {
-    const cfg = makeConfig({ planAutoSwitch: false });
-    expect(shouldFallbackPlan(402, "start-plan", cfg)).toBe(false);
-  });
-
-  it("falls back for start-plan auth/quota rejections and exhaustion 429s", () => {
-    const cfg = makeConfig();
-    expect(shouldFallbackPlan(401, "start-plan", cfg)).toBe(true);
-    expect(shouldFallbackPlan(402, "start-plan", cfg)).toBe(true);
-    expect(shouldFallbackPlan(403, "start-plan", cfg)).toBe(true);
+  it("falls back for start-plan auth/quota rejections and exhaustion 429s, with or without planAutoSwitch", () => {
+    // The fallback repairs a rejected plan in one request whether the plan
+    // was picked by the watcher or by hand (live 2026-10-06: flag off,
+    // hand-pinned start-plan, gateway 200 + quota envelope passed through).
+    expect(shouldFallbackPlan(401, "start-plan")).toBe(true);
+    expect(shouldFallbackPlan(402, "start-plan")).toBe(true);
+    expect(shouldFallbackPlan(403, "start-plan")).toBe(true);
     // A start-plan 429 is plan exhaustion, not load: the auto-claim loop kept
     // refreshing balances while every request was rejected (live 2026-10-05).
-    expect(shouldFallbackPlan(429, "start-plan", cfg)).toBe(true);
-    expect(shouldFallbackPlan(500, "start-plan", cfg)).toBe(false);
-    expect(shouldFallbackPlan(402, "coding-plan", cfg)).toBe(false);
-  });
-
-  it("falls back when the start-plan gateway itself is failing (502/504)", () => {
-    const cfg = makeConfig();
-    expect(shouldFallbackPlan(502, "start-plan", cfg)).toBe(true);
-    expect(shouldFallbackPlan(504, "start-plan", cfg)).toBe(true);
+    expect(shouldFallbackPlan(429, "start-plan")).toBe(true);
+    expect(shouldFallbackPlan(502, "start-plan")).toBe(true);
+    expect(shouldFallbackPlan(504, "start-plan")).toBe(true);
     // Other 5xx and rate limits are load signals, not plan failures; and the
     // coding plan has no further fallback target.
-    expect(shouldFallbackPlan(503, "start-plan", cfg)).toBe(false);
-    expect(shouldFallbackPlan(500, "coding-plan", cfg)).toBe(false);
-    expect(shouldFallbackPlan(502, "coding-plan", cfg)).toBe(false);
-    expect(shouldFallbackPlan(504, "coding-plan", cfg)).toBe(false);
+    expect(shouldFallbackPlan(500, "start-plan")).toBe(false);
+    expect(shouldFallbackPlan(503, "start-plan")).toBe(false);
+    expect(shouldFallbackPlan(402, "coding-plan")).toBe(false);
+    expect(shouldFallbackPlan(502, "coding-plan")).toBe(false);
   });
 });
 

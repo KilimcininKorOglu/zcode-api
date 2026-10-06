@@ -1391,7 +1391,10 @@ describe("proxyRequest — Anthropic compatibility mode (coding-plan)", () => {
       });
 
       const resp = await proxyRequest(clientReq, "openai", { config: startPlanConfig, auth, fetchImpl: fetchMock as any });
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      // A start-plan 403 now triggers the plan fallback (second call on the
+      // coding-plan URL, which this stub also answers 403), so the client sees
+      // the failure only after the one-shot retry.
+      expect(fetchMock).toHaveBeenCalledTimes(2);
       // Upstream errors are wrapped: openai→anthropic translation mode reports
       // them as 502 translation_failed (same convention as coding-plan).
       expect(resp.status).toBe(502);

@@ -1,9 +1,10 @@
 /**
- * Tests for the hybrid plan auto-switch fallback in `proxyRequest`: with
- * `planAutoSwitch` on, a start-plan 401/402/403 retries the SAME request once
- * on the coding plan (different URL, API-key auth, body re-transformed without
- * the start-plan system) and pins the effective plan for follow-up requests.
- * With the flag off, the upstream status passes through untouched.
+ * Tests for the hybrid plan fallback in `proxyRequest`: a start-plan request
+ * the gateway rejects (401/402/403/429/502/504 or a 200 quota envelope)
+ * retries the SAME request once on the coding plan (different URL, API-key
+ * auth, body re-transformed without the start-plan system) and pins the
+ * effective plan for follow-up requests. The fallback runs whether
+ * `planAutoSwitch` is on or off.
  */
 import { describe, it, expect, beforeEach, mock } from "bun:test";
 import { mkdtempSync, rmSync, readFileSync } from "node:fs";
@@ -109,7 +110,41 @@ function makeAuth(): AuthManager {
   return auth;
 }
 
-describe("proxyRequest — hybrid plan auto-switch fallback", () => {
+describe("proxyRequest — hybrid plan fallback", () => {
+  it("falls back with planAutoSwitch OFF when the gateway answers 200 + quota envelope", async () => {
+    // Live 2026-10-06 signature: flag off, start-plan hand-pinned, exhausted
+    // trial answered HTTP 200 + {"code":1005,"msg":"exceed quota limit"}; the
+    // envelope passed through and Claude Code saw broken streams.
+    const calls: RecordedCall[] = [];
+    const config: ProxyConfig = { ...TEST_CONFIG, planAutoSwitch: false };
+    const fetchImpl = Object.assign(
+      (async (req: Request): Promise<Response> => {
+        calls.push({
+          url: req.url,
+          authorization: req.headers.get("authorization"),
+          apiKey: req.headers.get("x-api-key"),
+          body: await req.clone().text(),
+        });
+        if (req.url.includes("/api/v1/zcode-plan/")) {
+          return new Response('{"code":1005,"msg":"exceed quota limit"}', {
+            status: 200,
+            headers: { "content-type": "application/json; charset=utf-8" },
+          });
+        }
+        return new Response(ANTHROPIC_OK, { status: 200, headers: { "content-type": "application/json" } });
+      }) as typeof fetch,
+      { preconnect: () => {} },
+    ) as typeof fetch;
+
+    const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0].url).toContain("https://zcode.z.ai/api/v1/zcode-plan/");
+    expect(calls[1].url).toContain("https://api.z.ai/api/anthropic");
+    expect(resp.status).toBe(200);
+    expect(await resp.text()).toContain("fallback reply");
+  });
+
   it("retries a start-plan 402 once on the coding plan and pins coding-plan", async () => {
     const calls: RecordedCall[] = [];
     const config: ProxyConfig = { ...TEST_CONFIG, planAutoSwitch: true };
@@ -200,14 +235,17 @@ describe("proxyRequest — hybrid plan auto-switch fallback", () => {
     expect(activePlan(config)).toBe("start-plan");
   });
 
-  it("passes a start-plan 402 through untouched when planAutoSwitch is off", async () => {
+  it("falls back on a start-plan 402 even when planAutoSwitch is off", async () => {
     const calls: RecordedCall[] = [];
     const config: ProxyConfig = { ...TEST_CONFIG, planAutoSwitch: false };
     const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl: makeFetch(calls) });
 
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
     expect(calls[0].url).toContain("https://zcode.z.ai/api/v1/zcode-plan/");
-    expect(resp.status).toBe(402);
+    expect(calls[1].url).toContain("https://api.z.ai/api/anthropic");
+    expect(resp.status).toBe(200);
+    // Flag off: config.plan still governs the NEXT request; only this one was
+    // repaired.
     expect(activePlan(config)).toBe("start-plan");
   });
 
