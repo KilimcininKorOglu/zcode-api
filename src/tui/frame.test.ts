@@ -35,7 +35,7 @@ function plainLines(state: FrameState): string[] {
 }
 
 describe("buildFrame", () => {
-  test("renders the three card titles, mirroring the Android layout", () => {
+  test("renders the three card titles", () => {
     const lines = plainLines(baseState());
     const text = lines.join("\n");
     expect(text).toContain("Settings & Login");

@@ -150,7 +150,7 @@ describe("ClaimScheduler.tick", () => {
     expect(h.scheduler.isStopped()).toBe(true);
   });
 
-  it("missing JWT backs off and retries (Android logs in after boot)", async () => {
+  it("missing JWT backs off and retries (login can land after boot)", async () => {
     const h = makeHarness({ cooldownMs: 60_000 });
     h.jwt = undefined;
     const res = await h.scheduler.tick();

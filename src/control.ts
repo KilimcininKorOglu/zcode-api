@@ -1,37 +1,28 @@
 /**
- * Localhost-only HTTP control listener for the Android app's Kotlin shell.
+ * In-process control layer for the `serve` web panel.
  *
- * The Kotlin foreground service starts the Node.js proxy server and a small
- * control listener on a separate port (passed via env `ZCODE_CONTROL_PORT`).
- * The proxy listener serves `/v1/*`, `/webui`, `/health`; the control listener
- * serves only `POST /control` and is bound to `127.0.0.1` so other devices on
- * the LAN cannot reach it. Two layers enforce loopback-only access:
- *
- * 1. `server.listen(port, "127.0.0.1", ...)` — never binds to `0.0.0.0`.
- * 2. Per-request `req.socket.remoteAddress` check — defends against a future
- *    bind regression where the listener accidentally widens.
- *
- * The listener exposes a JSON command protocol so Kotlin can drive OAuth
- * (via embedded WebView), start/stop the proxy server, update runtime config
- * (provider/plan), poll logs, and shut down the Node process.
+ * `createControlDispatcher()` gives the panel the same command semantics the
+ * panel previously reached over `POST /control` (start/stop proxy, provider /
+ * plan updates, log polling, quota, logout, shutdown) WITHOUT opening a
+ * second, unauthenticated loopback port — the panel's token-guarded transport
+ * is the only way in, and the caller owns it.
  */
-import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
-import type { ProviderId } from "../provider/types.js";
-import type { Credential } from "../auth/types.js";
+import type { ProviderId } from "./provider/types.js";
+import type { Credential } from "./auth/types.js";
 import {
   ZaiOAuthClient,
   BigmodelPollOAuthClient,
   AuthCodeOAuthClient,
   type OAuthFlowClient,
-} from "../auth/oauth.js";
-import { KeyResolver } from "../auth/resolver.js";
-import { saveCredential, clearCredential, loadCredential } from "../auth/store.js";
-import type { QuotaSnapshot } from "../server/routes-quota.js";
+} from "./auth/oauth.js";
+import { KeyResolver } from "./auth/resolver.js";
+import { saveCredential, clearCredential, loadCredential } from "./auth/store.js";
+import type { QuotaSnapshot } from "./server/routes-quota.js";
 
 /** Supported plan tiers. Mirrors `ProxyConfig.plan`. */
 export type PlanTier = "coding-plan" | "start-plan";
 
-/** The control protocol: request shape for `POST /control`. */
+/** The control protocol: request shape. */
 export type ControlCommand =
   | { cmd: "status" }
   | { cmd: "startOAuth"; provider: ProviderId }
@@ -89,23 +80,6 @@ export interface ControlState {
   };
 }
 
-interface StartControlOpts {
-  port: number;
-  state: ControlState;
-  /** Start the proxy server. Returns the bound port on success. */
-  onStartProxy?: () => Promise<LifecycleResult>;
-  /** Stop the proxy server. */
-  onStopProxy?: () => Promise<{ ok: true } | { ok: false; error: string }>;
-  /** Update runtime config (provider and/or plan). */
-  onSetConfig?: (changes: { provider?: ProviderId; plan?: PlanTier }) => Promise<ConfigUpdateResult>;
-  /** Hook for graceful shutdown (called by the `shutdown` command). */
-  onShutdown?: () => Promise<void> | void;
-  /** Live quota snapshot for the `quota` command (wired to collectQuotaSnapshot). */
-  onQuota?: () => Promise<QuotaSnapshot>;
-  /** Log buffer polled by `getLogs`. If omitted, an internal one is used. */
-  logBuffer?: LogBuffer;
-}
-
 /** Bounded ring buffer for runtime log lines with monotonic sequence numbers. */
 export class LogBuffer {
   private readonly lines: string[] = [];
@@ -142,63 +116,9 @@ export class LogBuffer {
   snapshot(): readonly string[] {
     return this.lines;
   }
-
-  /** Monotonic cursor; safe to expose externally. */
-  get cursor(): number {
-    return this.nextSeq;
-  }
 }
 
-/** Start the control listener bound to 127.0.0.1. Resolves once listening. */
-export function startControlListener(opts: StartControlOpts): Promise<{ close(): Promise<void> }> {
-  const logBuffer = opts.logBuffer ?? new LogBuffer();
-  const server: Server = createServer(async (req, res) => {
-    try {
-      const result = await handleControlRequest(req, opts.state, {
-        onStartProxy: opts.onStartProxy,
-        onStopProxy: opts.onStopProxy,
-        onSetConfig: opts.onSetConfig,
-        onShutdown: opts.onShutdown,
-        onQuota: opts.onQuota,
-        logBuffer,
-      });
-      writeJson(res, result.status, result.body);
-    } catch (err) {
-      writeJson(res, 500, { ok: false, error: `internal_error: ${(err as Error).message}` });
-    }
-  });
-
-  return new Promise((resolve, reject) => {
-    server.on("error", reject);
-    server.listen(opts.port, "127.0.0.1", () => resolve({
-      close: () => new Promise<void>((r) => server.close(() => r())),
-    }));
-  });
-}
-
-export interface ControlHandlerResult {
-  status: number;
-  body: ControlResponse;
-}
-
-/**
- * Build an in-process dispatcher for the control protocol: identical command
- * semantics to `POST /control`, but no listener and no loopback check — the
- * caller owns its transport and must guard it (token, origin, size limits).
- *
- * The Android shell keeps using {@link startControlListener}. Embedders that
- * already expose their own authenticated HTTP surface (the `serve` web panel)
- * use this instead, so a reachable panel does not also open a second,
- * unauthenticated port that can run stopProxy / logout / shutdown.
- */
-export function createControlDispatcher(
-  state: ControlState,
-  ctx: HandlerContext,
-): (cmd: ControlCommand) => Promise<ControlResponse> {
-  return (cmd) => dispatch(cmd, state, ctx);
-}
-
-/** Context passed to `handleControlRequest` for hook wiring + log access. */
+/** Context passed to the dispatcher for hook wiring + log access. */
 export interface HandlerContext {
   onStartProxy?: () => Promise<LifecycleResult>;
   onStopProxy?: () => Promise<{ ok: true } | { ok: false; error: string }>;
@@ -210,52 +130,19 @@ export interface HandlerContext {
   createLoginClient?: (provider: ProviderId) => OAuthFlowClient;
 }
 
-export function handleControlRequestForTest(
-  req: IncomingMessage,
-  state: ControlState,
-  onShutdown?: () => Promise<void> | void,
-): Promise<ControlHandlerResult> {
-  // Backwards-compatible shape: only `onShutdown` is wired.
-  const ctx: HandlerContext = { onShutdown, logBuffer: new LogBuffer() };
-  return handleControlRequest(req, state, ctx);
-}
-
 /**
- * Test entry that allows wiring all lifecycle hooks. Prefer this in new tests
- * for startProxy/stopProxy/setConfig/getLogs coverage.
+ * Build an in-process dispatcher for the control protocol: identical command
+ * semantics to the old `POST /control` listener, but no listener and no
+ * loopback check — the caller owns its transport and must guard it (token,
+ * origin, size limits). The `serve` web panel uses this, so a reachable panel
+ * does not also open a second, unauthenticated port that can run stopProxy /
+ * logout / shutdown.
  */
-export function handleControlRequestWithHooksForTest(
-  req: IncomingMessage,
+export function createControlDispatcher(
   state: ControlState,
   ctx: HandlerContext,
-): Promise<ControlHandlerResult> {
-  return handleControlRequest(req, state, ctx);
-}
-
-async function handleControlRequest(
-  req: IncomingMessage,
-  state: ControlState,
-  ctx: HandlerContext,
-): Promise<ControlHandlerResult> {
-  if (!isLoopback(req.socket.remoteAddress)) {
-    return { status: 403, body: { ok: false, error: "forbidden: non-loopback remote address" } };
-  }
-
-  const parsed = new URL(req.url ?? "/", "http://127.0.0.1");
-  if (req.method !== "POST" || parsed.pathname !== "/control") {
-    return { status: 404, body: { ok: false, error: `not_found: ${req.method} ${parsed.pathname}` } };
-  }
-
-  const body = await readBody(req);
-  let cmd: ControlCommand;
-  try {
-    cmd = JSON.parse(body) as ControlCommand;
-  } catch {
-    return { status: 400, body: { ok: false, error: "invalid_json" } };
-  }
-
-  const result = await dispatch(cmd, state, ctx);
-  return { status: 200, body: result };
+): (cmd: ControlCommand) => Promise<ControlResponse> {
+  return (cmd) => dispatch(cmd, state, ctx);
 }
 
 async function dispatch(
@@ -310,7 +197,7 @@ async function dispatch(
         console.error(`OAuth flow ended without success: ${(err as Error)?.message ?? String(err)}`);
       }).finally(() => {
         // MUST run on rejection too — otherwise the callback port leaks until
-        // process death (Android: only a device reboot clears it).
+        // process death.
         void client.close().catch(() => {});
         if (state.activeOauth?.state === started.state) state.activeOauth = undefined;
       });
@@ -350,7 +237,7 @@ async function dispatch(
     }
 
     case "logout": {
-      await clearCredential();
+      clearCredential();
       return { ok: true, event: "loggedOut" };
     }
 
@@ -388,7 +275,7 @@ async function dispatch(
     case "quota": {
       // Snapshot build hits both upstream quota planes (billing + monitor);
       // a failure (e.g. not logged in) surfaces verbatim as the envelope error
-      // so the app can render "tap to retry" instead of an empty card.
+      // so the panel can render "tap to retry" instead of an empty card.
       if (!ctx.onQuota) return { ok: false, error: "quota_unavailable" };
       try {
         const quota = await ctx.onQuota();
@@ -406,26 +293,4 @@ async function dispatch(
     default:
       return { ok: false, error: `unknown_cmd: ${(cmd as { cmd: string }).cmd}` };
   }
-}
-
-function isLoopback(addr: string | undefined): boolean {
-  return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
-}
-
-function writeJson(res: ServerResponse, status: number, body: unknown): void {
-  const json = JSON.stringify(body);
-  res.writeHead(status, {
-    "content-type": "application/json; charset=utf-8",
-    "content-length": Buffer.byteLength(json),
-  });
-  res.end(json);
-}
-
-function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on("data", (c: Buffer) => chunks.push(c));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
-    req.on("error", reject);
-  });
 }

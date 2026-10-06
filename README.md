@@ -5,7 +5,7 @@
 [![Release](https://img.shields.io/github/v/release/KilimcininKorOglu/zcode-api)](https://github.com/KilimcininKorOglu/zcode-api/releases)
 [![CI](https://github.com/KilimcininKorOglu/zcode-api/actions/workflows/ci.yml/badge.svg)](https://github.com/KilimcininKorOglu/zcode-api/actions/workflows/ci.yml)
 
-<img src="Android-APP/design/assets/zcode-app-icon.png" width="88" alt="ZCode Proxy icon" />
+<img src="docs/images/zcode-app-icon.png" width="88" alt="ZCode Proxy icon" />
 
 # ZCode Proxy
 
@@ -15,7 +15,7 @@ A small tool that runs on your own machine: Zhipu Z.AI / Bigmodel coding plans (
 normally only work inside the official client. ZCode Proxy exposes them locally as standard OpenAI / Anthropic APIs,
 so Claude Code, Codex, Silly Tavern ... can all use your plan quota directly.
 
-[Quick start](#-one-minute-quickstart) · [Connect coding tools](#-connect-your-coding-tools) · [Mobile](#-mobile-android) · [FAQ](#-faq)
+[Quick start](#-one-minute-quickstart) · [Connect coding tools](#-connect-your-coding-tools) · [Docker & configuration](#-docker--configuration) · [FAQ](#-faq)
 
 </div>
 
@@ -25,7 +25,6 @@ so Claude Code, Codex, Silly Tavern ... can all use your plan quota directly.
 
 - 🧩 **One address, three formats** —— OpenAI, Anthropic, and Responses (Codex-only) APIs all served locally on `127.0.0.1:8080`; use whichever format your tool speaks.
 - 🖥️ **Visual panel included** —— launching in a terminal opens a visual panel (headless mode also available); start, log in, and read logs with clicks, or manage from your phone.
-- 📱 **Android app** —— start/stop the proxy on your phone, watch live logs, switch providers, handy when away from your desk.
 - 💬 **Built-in web chat** —— open `/webui` for a local ChatGPT-style chat page to test models quickly.
 - 🌙 **Idle channel & instant plan claiming** (optional) —— a free off-peak compute channel plus automatic claiming of limited trial plans, both built in.
 - 🔀 **Hybrid plan auto-switch** (optional) —— holding both a trial start-plan and a personal coding-plan? Pick the serving order yourself with `planPriority`: spend the expiring trial credits first, or keep the coding plan primary and drop to the trial when its 5-hour / weekly window empties (`planAutoSwitch`).
@@ -143,16 +142,7 @@ curl http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/jso
 }'
 ```
 
-## 📱 Mobile (Android)
-
-Download the latest `apk` from [GitHub Releases](https://github.com/KilimcininKorOglu/zcode-api/releases) and install.
-The app mirrors the desktop features: one-tap proxy start, simple setup, live logs, provider & plan switching, light/dark themes.
-
-|                                  Home                                   |                               Logs                                |                                 Settings                                  |                                  Dark theme                                  |
-|:-----------------------------------------------------------------------:|:-----------------------------------------------------------------:|:-------------------------------------------------------------------------:|:----------------------------------------------------------------------------:|
-| <img src="docs/images/android/home-light.png" width="210" alt="Home" /> | <img src="docs/images/android/logs.png" width="210" alt="Logs" /> | <img src="docs/images/android/settings.png" width="210" alt="Settings" /> | <img src="docs/images/android/home-dark.png" width="210" alt="Dark theme" /> |
-
-Phone and desktop run the same core: the app embeds the full proxy engine, **the phone itself is a standalone proxy server**, and desktops on the same LAN can also use the proxy address on the phone.
+## 🐳 Docker & configuration
 
 <details>
 <summary><b>Docker deployment</b></summary>

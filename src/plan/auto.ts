@@ -296,8 +296,7 @@ export function startPlanAutoWatcher(config: ProxyConfig, deps: PlanAutoWatcherD
       ]);
 
       if (start === null) {
-        // No plan JWT (login pending, e.g. Android before first login) — no
-        // data yet, retry on the next tick.
+        // No plan JWT (login pending) — no data yet, retry on the next tick.
         errors.push("no plan JWT (login pending)");
       } else if (!start.ok) {
         errors.push(start.error ?? "balance probe failed");

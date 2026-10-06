@@ -2,7 +2,7 @@
  * Measure what THIS runtime's fetch actually does with compressed responses.
  *
  * stripAutoDecodedEncoding must know which codings fetch inflates
- * transparently: undici (the Android bundle's Node fetch) decodes gzip/
+ * transparently: undici (Node's fetch) decodes gzip/
  * deflate/br while keeping the stale `content-encoding` header, while Bun
  * honors its `decompress: false` extension and returns raw bytes. A hardcoded
  * runtime sniff (`typeof Bun === "undefined"`) goes stale the day a runtime

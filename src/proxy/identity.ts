@@ -32,8 +32,8 @@
  * `ZCode/unknown`.
  *
  * Runtime values are read via env overrides (matching the existing
- * ZCODE_IDENTITY_PLATFORM/ARCH/RELEASE pattern) so the Android entry can emit
- * desktop-Linux identity without changing this module:
+ * ZCODE_IDENTITY_PLATFORM/ARCH/RELEASE pattern) so an operator can emit any
+ * platform identity without changing this module:
  *   - ZCODE_IDENTITY_RELEASE_CHANNEL
  *   - ZCODE_IDENTITY_CLIENT_LANGUAGE   (default: Intl locale, e.g. "zh-CN")
  *   - ZCODE_IDENTITY_CLIENT_TIMEZONE   (default: Intl timezone, e.g. "Asia/Shanghai")
@@ -109,8 +109,8 @@ interface ResolvedIdentityValues {
 
 /** Shared env/config resolution for both builders (values only — ordering differs per builder). */
 function resolveIdentityValues(id: ProxyIdentity): ResolvedIdentityValues {
-  // Env overrides (ZCODE_IDENTITY_PLATFORM/ARCH/RELEASE) let the Android entry
-  // emit desktop-Linux identity headers without changing this module.
+  // Env overrides (ZCODE_IDENTITY_PLATFORM/ARCH/RELEASE) let an operator emit
+  // any platform's identity headers without changing this module.
   return {
     n: resolveAppVersion(id.appVersion),
     platform: normalizePrintableHeaderValue(process.env.ZCODE_IDENTITY_PLATFORM ?? process.platform),
@@ -123,8 +123,8 @@ function resolveIdentityValues(id: ProxyIdentity): ResolvedIdentityValues {
       ?? (process.env.ZCODE_ENV?.trim().toLowerCase() === "test" ? "test" : "production"),
     clientLanguage: resolveClientLanguage(),
     clientTimezone: resolveClientTimezone(),
-    // env (Android NodeRunner injection) wins over the config.yaml value (desktop
-    // persistence) — both are UUIDv4 generated once and reused forever.
+    // env wins over the config.yaml value — both are UUIDv4 generated once
+    // and reused forever.
     deviceMid: normalizePrintableHeaderValue(process.env.ZCODE_IDENTITY_DEVICE_MID)
       ?? normalizePrintableHeaderValue(id.deviceMid),
   };
@@ -217,8 +217,8 @@ export function identityCacheKey(identity: ProxyIdentity): string {
  *
  * `shell` follows the bundle algorithm verbatim (`SHELL` ?? `ComSpec` ?? ""
  * → basename, else "unknown" — "unknown" is a legal shell value when
- * detection fails). `cwd` is `ZCODE_IDENTITY_ENV_CWD` if set (Android /
- * masked-identity deployments), else `process.cwd()` — the real client sends
+ * detection fails). `cwd` is `ZCODE_IDENTITY_ENV_CWD` if set (masked-identity
+ * deployments), else `process.cwd()` — the real client sends
  * its actual working directory, and `cwd` is NEVER "unknown" in real traffic.
  */
 export interface EnvPromptInfo {

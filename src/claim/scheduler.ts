@@ -87,7 +87,7 @@ export class ClaimScheduler {
       return this.errorBackoff(`credential resolution failed: ${(err as Error).message}`);
     }
     if (!jwt) {
-      // Missing JWT is "login pending" (Android logs in after boot), not fatal:
+      // Missing JWT is "login pending" (a login can land after boot), not fatal:
       // back off and retry — the login_required CLAIM FAILURE (server 401) is
       // the terminal case handled below.
       return this.errorBackoff("no JWT available (oauth login pending)");

@@ -2216,7 +2216,7 @@ function reclaimCaptchaHeap() {
     const gc =
       (typeof Bun !== "undefined" && typeof Bun.gc === "function" && Bun.gc) ||
       (typeof globalThis.gc === "function" && globalThis.gc); // Node --expose-gc (tests)
-    if (!gc) return; // plain Node runtime (Android bundle): no exposed gc, skip
+    if (!gc) return; // plain Node runtime: no exposed gc, skip
     const raw = Number(process.env.CAPTCHA_GC_MIN_INTERVAL_MS);
     const minMs = Number.isFinite(raw) && raw >= 0 ? raw : 5_000;
     const now = Date.now();

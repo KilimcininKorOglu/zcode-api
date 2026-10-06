@@ -1,7 +1,5 @@
 /**
- * Update notice (issue #60) — the CLI/TUI counterpart of the Android app's
- * `UpdateChecker`. The Android rules are ported as-is so both ends agree on
- * what "newer" means:
+ * Update notice (issue #60) — silent-by-default release check for the CLI/TUI:
  *
  *   - ask the GitHub releases API for the newest tag (`/releases/latest`
  *     already excludes prereleases),
@@ -28,15 +26,12 @@ import { existsSync } from "node:fs";
 export const LATEST_RELEASE_API = "https://api.github.com/repos/KilimcininKorOglu/zcode-api/releases/latest";
 /** Human-facing releases page, used for the "how to update" hint. */
 export const RELEASES_PAGE = "https://github.com/KilimcininKorOglu/zcode-api/releases";
-/**
- * GitHub answers 403 to requests without a User-Agent — the Android checker
- * carries an explicit one for exactly this reason.
- */
+/** GitHub answers 403 to requests without a User-Agent. */
 const USER_AGENT = "zcode-proxy-update-check";
 const REQUEST_TIMEOUT_MS = 10_000;
 /** `ZCODE_UPDATE_CHECK=off` disables the automatic startup check. */
 export const UPDATE_CHECK_ENV = "ZCODE_UPDATE_CHECK";
-/** `ZCODE_UPDATE_SKIP=v4.7.6,v4.7.7` mutes specific tags (Android's skipped_tag). */
+/** `ZCODE_UPDATE_SKIP=v4.7.6,v4.7.7` mutes specific tags. */
 export const UPDATE_SKIP_ENV = "ZCODE_UPDATE_SKIP";
 const DISABLED_VALUES = new Set(["0", "false", "off", "no", "disable", "disabled"]);
 
@@ -98,13 +93,13 @@ export function updateCheckEnabled(env: Env = process.env): boolean {
 /**
  * Accepted release-tag shape: an optional `v`, one to three numeric segments,
  * and an optional, explicitly separated variant suffix — `v4.7.5`, `4.8`,
- * `v4.7.2.android`, `v4.5.4-AppOverhaul`, `v4.7.6-rc.1`. The end anchor is what
+ * `v4.7.2-beta`, `v4.5.4-AppOverhaul`, `v4.7.6-rc.1`. The end anchor is what
  * keeps `v4.7.6garbage` (as well as `v4.7.6.1`, `Windows`, `latest`) from being
  * read as `4.7.6` and nagging forever: no version core means "never newer".
  */
 const VERSION_TAG = /^v?(\d+(?:\.\d+){0,2})(?:[.-][A-Za-z][0-9A-Za-z.-]*)?$/;
 
-/** `v4.7.2.android` → `4.7.2`; `""` when the tag is not a release version. */
+/** `v4.7.6-android` → `4.7.6`; `""` when the tag is not a release version. */
 function versionCore(tag: string): string {
   const match = VERSION_TAG.exec(tag.trim());
   return match ? match[1] : "";
@@ -129,9 +124,9 @@ export function parseVersion(tag: string): [number, number, number] | null {
 }
 
 /**
- * Android's rule (`UpdateChecker.isNewer`): compare the three numeric segments
- * in order. An unparsable tag is never "newer" — otherwise a single malformed
- * release would nag every user on every start.
+ * Compare the three numeric segments in order. An unparsable tag is never
+ * "newer" — otherwise a single malformed release would nag every user on
+ * every start.
  */
 export function isNewerVersion(current: string, latest: string): boolean {
   const running = parseVersion(current);
@@ -200,8 +195,8 @@ export function buildUpdateNotice(
 /**
  * Ask the releases API for the newest tag. Returns null for every failure mode
  * — DNS/TLS/proxy interference, timeout, non-2xx (rate limit, 404), truncated
- * or unexpected JSON — because the caller must never treat "cannot check" as an
- * error (the Android checker documents the same contract).
+ * or unexpected JSON — because the caller must never treat "cannot check" as
+ * an error.
  */
 export async function fetchLatestRelease(opts: UpdateCheckOptions = {}): Promise<ReleaseInfo | null> {
   const fetchImpl = opts.fetchImpl ?? (fetch as unknown as FetchLike);

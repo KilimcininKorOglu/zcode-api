@@ -8,8 +8,8 @@ import type { Credential } from "./types.js";
  * Resolves the upstream credential to inject into proxied requests.
  *
  * The credential comes from `auth login` and is injected via
- * {@link setOAuthCredential} at startup (and re-loaded on Android's
- * `startProxy` so a fresh login after restart is picked up).
+ * {@link setOAuthCredential} at startup (and re-loaded when `startProxy`
+ * boots the proxy, so a fresh login after restart is picked up).
  */
 export class AuthManager {
   private oauthCred: Credential | null = null;

@@ -2,7 +2,7 @@
  * HTTP server bootstrap with routing and proxy API key auth.
  *
  * Replaces the original `Bun.serve` adapter with `node:http.createServer` so
- * the same code runs on Bun (dev mode, source TS) and on Node (Android bundle).
+ * the same code runs on Bun (dev mode, source TS) and on plain Node.
  * Bun supports `node:http` natively; Node has no `Bun.serve` equivalent.
  *
  * @see .omo/plans/zcode-proxy.md Task 7

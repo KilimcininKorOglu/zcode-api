@@ -2,9 +2,8 @@
  * Tests for `src/update/check.ts` — the CLI/TUI update notice (issue #60).
  *
  * Every case injects a mock transport: the suite never touches the network,
- * and the "silent failure" contract (which the Android checker documents, and
- * which is why this module deliberately has no throwing path) is what most of
- * these assertions are about.
+ * and the "silent failure" contract (which is why this module deliberately
+ * has no throwing path) is what most of these assertions are about.
  */
 import { describe, it, expect } from "bun:test";
 import {
@@ -57,7 +56,8 @@ describe("isNewerVersion", () => {
   });
 
   it("accepts the variant suffixes this repository actually uses", () => {
-    // Real tags: v4.7.2.android, v4.5.4-AppOverhaul, v2.0.5.alpha, v1.4.7.alpha.
+    // Real tags: v4.5.4-AppOverhaul, v2.0.5.alpha, v1.4.7.alpha, plus the
+    // historic dot-suffixed v4.7.2.android the tag grammar still accepts.
     expect(isNewerVersion("4.7.5", "v4.7.6-android")).toBe(true);
     expect(isNewerVersion("4.7.5", "v4.7.6-rc.1")).toBe(true);
     expect(isNewerVersion("4.7.1", "v4.7.2.android")).toBe(true);

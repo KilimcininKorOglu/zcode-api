@@ -11,8 +11,7 @@
  * The worker entry is a build-time FILE ASSET (captcha-worker-asset.ts —
  * `bun build --compile` cannot resolve `new Worker(new URL(...))` at
  * runtime). Resolution here is dynamic and may legitimately fail: the asset
- * exists only after scripts/build-fork-worker.ts runs, and the esbuild
- * Android bundle marks the asset module external. On such deployments we
+ * exists only after scripts/build-fork-worker.ts runs. Without it we
  * solve IN-PROCESS instead (the pre-worker behavior, still bounded by the
  * CAPTCHA_SYNC_FETCH_TIMEOUT_MS / CAPTCHA_SOLVE_TIMEOUT_MS caps). Mode
  * transitions are announced once on stderr for operators.

@@ -21,7 +21,7 @@ import {
   type ControlCommand,
   type ControlResponse,
   type ControlState,
-} from "../android/control.js";
+} from "../control.js";
 
 const TOKEN = "panel-token-for-tests";
 
@@ -304,8 +304,8 @@ describe("panel control authentication", () => {
 
 describe("panel ↔ control dispatcher wiring", () => {
   it("runs a real control command in process, with no extra listener", async () => {
-    // The full path the panel uses in `serve`: a real dispatcher built from the
-    // Android control module, driven over the panel's own authenticated HTTP
+    // The full path the panel uses in `serve`: a real dispatcher from
+    // src/control.ts, driven over the panel's own authenticated HTTP
     // surface. Nothing here binds a control port.
     let stops = 0;
     const state: ControlState = { provider: "zai", plan: "coding-plan", proxyPort: 8080 };

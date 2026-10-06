@@ -6,7 +6,7 @@
  * mouse tracking, opencode-style). No I/O, no clock — fully deterministic so
  * tests can snapshot both the text and the regions.
  *
- * Layout mirrors the Android app: three stacked cards (Settings & Login /
+ * Layout: three stacked cards (Settings & Login /
  * Proxy Server / Logs) plus a toast line and a key-hint footer (the hints
  * are themselves clickable). The top two cards are fixed-height; the log
  * card absorbs the remaining terminal rows.
@@ -321,7 +321,7 @@ function padName(t: string): string {
   return pad > 0 ? t + " ".repeat(pad) : t;
 }
 
-/** Threshold color for remaining ratio (GitHub dark palette, same semantics as Android): ≤10% danger / ≤30% warning / else success. */
+/** Threshold color for remaining ratio (GitHub dark palette): ≤10% danger / ≤30% warning / else success. */
 function fracColor(frac: number): string {
   return frac <= 0.1 ? BAR_RED : frac <= 0.3 ? BAR_AMBER : BAR_GREEN;
 }

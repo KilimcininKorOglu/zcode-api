@@ -1,8 +1,7 @@
 /**
  * The log pane: a bounded ring of leveled log lines with tail-following and
- * scrollback, mirroring the Android app's Logs card (LazyColumn that sticks
- * to the newest line). Pure state — the frame renderer and terminal glue
- * read it, tests drive it directly.
+ * scrollback that sticks to the newest line. Pure state — the frame renderer
+ * and terminal glue read it, tests drive it directly.
  */
 import { stripAnsi } from "./width.js";
 

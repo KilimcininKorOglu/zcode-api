@@ -4,14 +4,13 @@
  * `serve` has no TUI, and inside Docker there is no terminal to render one
  * into — today the only way to see quota, switch provider/plan or read live
  * logs is `docker exec` plus hand-editing `config.yaml` and restarting. This
- * module exposes the *existing* localhost control protocol
- * (`src/android/control.ts`, already used by the Android shell) through a
- * token-guarded HTTP surface plus one embedded page. It adds no new state and
- * no new upstream calls:
+ * module exposes the existing in-process control protocol
+ * (`src/control.ts`) through a token-guarded HTTP surface plus one embedded
+ * page. It adds no new state and no new upstream calls:
  *
  *   browser → panel (token) → POST /api/control → in-process dispatcher
  *
- * The dispatcher is `createControlDispatcher()` from `src/android/control.ts`:
+ * The dispatcher is `createControlDispatcher()` from `src/control.ts`:
  * the same command semantics `POST /control` serves, called directly instead of
  * over a second loopback HTTP port. Opening such a port would mean an
  * unauthenticated path to `stopProxy` / `logout` / `shutdown` for anything that
@@ -32,7 +31,7 @@
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
-import type { ControlCommand, ControlResponse } from "../android/control.js";
+import type { ControlCommand, ControlResponse } from "../control.js";
 import panelHtml from "./panel-page.txt" with { type: "text" };
 
 /** Env flag that enables the panel. Empty / `0` / `false` / `no` / `off` = off. */
@@ -42,7 +41,7 @@ export const PANEL_TOKEN_ENV = "ZCODE_PANEL_TOKEN";
 /** Panel listen port (loopback). */
 export const PANEL_PORT_ENV = "ZCODE_PANEL_PORT";
 
-/** Defaults mirror the Android entry's wiring so operators only set one thing. */
+/** Single default so operators only set one thing. */
 export const DEFAULT_PANEL_PORT = 8090;
 
 /** Control commands are small JSON documents; anything bigger is a mistake. */

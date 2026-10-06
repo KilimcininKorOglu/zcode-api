@@ -1,6 +1,6 @@
 /**
  * Targeted YAML config editing helpers shared by the CLI entries (serve /
- * android / tui) and the TUI runtime.
+ * tui) and the TUI runtime.
  */
 import { parseDocument } from "yaml";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
@@ -27,7 +27,7 @@ export function updateConfigYaml(
 
 /**
  * Create the config file from the bundled template when missing.
- * Shared by the CLI entries (serve / android / auth login) and the TUI —
+ * Shared by the CLI entries (serve / auth login) and the TUI —
  * they used to each hand-roll this block. Returns true when the file was
  * created, false when it already existed.
  */

@@ -192,7 +192,7 @@ let defaultRoutingKey = "";
 
 /**
  * Process-wide routing service, shared across requests (snapshot cache).
- * Recreated when the relevant config values change (Android `setConfig`) —
+ * Recreated when the relevant config values change —
  * keyed on the full identity because the service embeds it in config-fetch
  * headers. Returns `null` when disabled.
  */

@@ -1,6 +1,6 @@
 /**
  * `startServer` option assembly shared by every entry that boots the proxy
- * in-process (serve / android / tui).
+ * in-process (serve / tui).
  */
 import type { ProxyConfig } from "../config/types.js";
 import type { AuthManager } from "../auth/manager.js";

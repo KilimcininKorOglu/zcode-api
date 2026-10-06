@@ -5,7 +5,7 @@
 [![Release](https://img.shields.io/github/v/release/KilimcininKorOglu/zcode-api)](https://github.com/KilimcininKorOglu/zcode-api/releases)
 [![CI](https://github.com/KilimcininKorOglu/zcode-api/actions/workflows/ci.yml/badge.svg)](https://github.com/KilimcininKorOglu/zcode-api/actions/workflows/ci.yml)
 
-<img src="Android-APP/design/assets/zcode-app-icon.png" width="88" alt="ZCode Proxy icon" />
+<img src="docs/images/zcode-app-icon.png" width="88" alt="ZCode Proxy icon" />
 
 # ZCode Proxy
 
@@ -15,7 +15,7 @@ Kendi bilgisayarınızda çalışan küçük bir araç: Zhipu Z.AI / Bigmodel co
 normalde yalnız resmi client içinde çalışır. ZCode Proxy bu planları yerel olarak standart OpenAI / Anthropic API'leri
 olarak sunar; böylece Claude Code, Codex, Silly Tavern ... plan kotanızı doğrudan kullanabilir.
 
-[Hızlı başlangıç](#-bir-dakikalık-hızlı-başlangıç) · [Kodlama araçlarını bağlayın](#-kodlama-araçlarınızı-bağlayın) · [Mobil](#-mobil-android) · [SSS](#-sss)
+[Hızlı başlangıç](#-bir-dakikalık-hızlı-başlangıç) · [Kodlama araçlarını bağlayın](#-kodlama-araçlarınızı-bağlayın) · [Docker ve yapılandırma](#-docker-ve-yapılandırma) · [SSS](#-sss)
 
 </div>
 
@@ -25,7 +25,6 @@ olarak sunar; böylece Claude Code, Codex, Silly Tavern ... plan kotanızı doğ
 
 - 🧩 **Tek adres, üç format** —— OpenAI, Anthropic ve Responses (yalnız Codex) API'lerinin hepsi yerelde `127.0.0.1:8080` üzerinde servis edilir; aracınız hangi formatı konuşuyorsa onu kullanın.
 - 🖥️ **Görsel panel dahil** —— terminalde açtığınızda görsel bir panel gelir (headless mod da var); başlatma, login ve logları okuma tıklamayla olur, ya da telefonunuzdan yönetin.
-- 📱 **Android uygulaması** —— proxy'yi telefondan başlatın/durdurun, canlı logları izleyin, provider değiştirin; masaüstünden uzaktayken çok işe yarar.
 - 💬 **Yerleşik web sohbeti** —— hızlı model denemesi için `/webui` adresindeki ChatGPT tarzı yerel sohbet sayfasını açın.
 - 🌙 **Boş kanal ve anlık plan claim'i** (isteğe bağlı) —— gece yarısı gibi boş saatlerde ücretsiz compute kanalı ve sınırlı deneme planlarının otomatik claim'i, ikisi de içinde.
 - 🔀 **Hibrit plan auto-switch** (isteğe bağlı) —— hem deneme start-plan hem kişisel coding-plan mı tutuyorsunuz? Sırayı kendiniz seçin (`planPriority`): önce bitmek üzere olan deneme kredisini harcayın ya da coding-plan'ı başta tutup 5 saatlik / haftalık penceresi bitince deneme planına düşün (`planAutoSwitch`).
@@ -143,16 +142,7 @@ curl http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/jso
 }'
 ```
 
-## 📱 Mobil (Android)
-
-Son `apk`yı [GitHub Releases](https://github.com/KilimcininKorOglu/zcode-api/releases) üzerinden indirip kurun.
-Uygulama masaüstü özelliklerini aynen taşır: tek dokunuşla proxy başlatma, basit kurulum, canlı loglar, provider ve plan değiştirme, açık/koyu tema.
-
-|                                  Ana ekran                             |                               Loglar                             |                                 Ayarlar                                  |                                  Koyu tema                                  |
-|:-----------------------------------------------------------------------:|:-----------------------------------------------------------------:|:-------------------------------------------------------------------------:|:----------------------------------------------------------------------------:|
-| <img src="docs/images/android/home-light.png" width="210" alt="Ana ekran" /> | <img src="docs/images/android/logs.png" width="210" alt="Loglar" /> | <img src="docs/images/android/settings.png" width="210" alt="Ayarlar" /> | <img src="docs/images/android/home-dark.png" width="210" alt="Koyu tema" /> |
-
-Telefon ve masaüstü aynı çekirdeği çalıştırır: uygulama proxy motorunun tamamını gömer, **telefonun kendisi bağımsız bir proxy sunucusudur** ve aynı LAN'daki masaüstleri de telefonun proxy adresini kullanabilir.
+## 🐳 Docker ve yapılandırma
 
 <details>
 <summary><b>Docker deployment</b></summary>

@@ -1,10 +1,9 @@
 /**
  * PC terminal UI (zcode-proxy's default mode) — an in-process control panel
- * mirroring the Android app's three-card layout: Settings & Login / Proxy
- * Server / Logs.
+ * with a three-card layout: Settings & Login / Proxy Server / Logs.
  *
- * The TUI owns the terminal (alternate screen + raw mode) and, like the
- * Android entry, intercepts console.log/warn/error into a ring buffer so the
+ * The TUI owns the terminal (alternate screen + raw mode) and intercepts
+ * console.log/warn/error into a ring buffer so the
  * per-request log rows land in the Logs card. Zero new dependencies: the
  * renderer, input parser and width math are hand-rolled ANSI/VT (Bun- and
  * Node-compatible, bundles into both release artifacts).
@@ -107,7 +106,7 @@ export async function runTui(args: ServeArgs): Promise<void> {
     try { realStdoutWrite("\x1b[0m\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l"); } catch { /* terminal gone */ }
   };
 
-  // --- console interception → log pane (Android-entry pattern) ------------
+  // --- console interception → log pane -------------------------------------
   // ALL console methods are intercepted, not just log/warn/error: guest
   // scripts (the captcha SDK) probe the full console surface, and anything
   // left unpatched would bypass the pane and write raw into the alt-screen
@@ -241,7 +240,7 @@ export async function runTui(args: ServeArgs): Promise<void> {
   }
 
   // --- update notice (issue #60) -------------------------------------------
-  // Same check the Android app runs at startup: silent on every failure, and
+  // Silent on every failure, and
   // the result lands in the Logs card (the panel surfaces it through the log
   // tee for free). `u` re-runs it manually — an explicit request overrides
   // ZCODE_UPDATE_CHECK=off and the muted-tag list, and always answers visibly.
@@ -326,7 +325,7 @@ export async function runTui(args: ServeArgs): Promise<void> {
     }
   }
 
-  // --- proxy lifecycle (mirrors the Android startProxy/stopProxy hooks) ----
+  // --- proxy lifecycle ------------------------------------------------------
   async function startProxy(): Promise<void> {
     if (state.serverStatus === "running" || state.serverStatus === "starting") return;
     state.serverStatus = "starting";
@@ -387,7 +386,7 @@ export async function runTui(args: ServeArgs): Promise<void> {
     configWatcher = watchConfigFile(path, config, jobs.handles);
   }
 
-  // --- provider / plan switching (mirrors the Android setConfig command) ---
+  // --- provider / plan switching --------------------------------------------
   function switchProvider(): void {
     const next: ProviderId = state.provider === "zai" ? "bigmodel" : "zai";
     applyConfigChange(next, state.plan, `provider → ${next}`);
@@ -505,8 +504,7 @@ export async function runTui(args: ServeArgs): Promise<void> {
       console.error(`OAuth flow ended without success: ${msg}`);
       setToast(`login failed: ${msg}`, "err");
     }).finally(() => {
-      // MUST run on rejection too — otherwise the callback port leaks
-      // (fixed Android bug 5746857, same discipline applies here).
+      // MUST run on rejection too — otherwise the callback port leaks.
       void client.close().catch(() => {});
       if (activeOauth?.client === client) activeOauth = null;
       state.loginInFlight = false;

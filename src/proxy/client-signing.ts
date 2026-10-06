@@ -585,7 +585,7 @@ let defaultSignerKey = "";
 /**
  * Process-wide signing manager, shared across requests (gate + key caches).
  * Returns `null` when `clientSigning.enabled` is false. Recreated when the
- * relevant config values change (Android `setConfig`) — keyed on the full
+ * relevant config values change — keyed on the full
  * identity because the manager embeds it in gate-fetch headers.
  */
 export function getDefaultClientSigning(config: {

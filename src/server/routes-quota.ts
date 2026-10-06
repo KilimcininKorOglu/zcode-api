@@ -145,7 +145,7 @@ function toFiniteNumber(v: unknown): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
-/** Platform fingerprint the billing gateway expects (`${platform}-${arch}`), reconstructed from the observed claim-client format. Reuses identity.ts's env-override normalization (same ZCODE_IDENTITY_PLATFORM/ARCH overrides the proxy headers use — Android seeds linux-x64 via index.ts); empty or non-printable overrides fall back to the real values — an empty override must not yield `-x64`/`linux-`. */
+/** Platform fingerprint the billing gateway expects (`${platform}-${arch}`), reconstructed from the observed claim-client format. Reuses identity.ts's env-override normalization (same ZCODE_IDENTITY_PLATFORM/ARCH overrides the proxy headers use); empty or non-printable overrides fall back to the real values — an empty override must not yield `-x64`/`linux-`. */
 function billingPlatform(): string {
   return `${normalizePrintableHeaderValue(process.env.ZCODE_IDENTITY_PLATFORM) ?? process.platform}-${normalizePrintableHeaderValue(process.env.ZCODE_IDENTITY_ARCH) ?? os.arch()}`;
 }
