@@ -1,6 +1,9 @@
 <div align="center">
 
-English | **Türkçe**
+[English](README.md) | **Türkçe**
+
+[![Release](https://img.shields.io/github/v/release/KilimcininKorOglu/zcode-api)](https://github.com/KilimcininKorOglu/zcode-api/releases)
+[![CI](https://github.com/KilimcininKorOglu/zcode-api/actions/workflows/ci.yml/badge.svg)](https://github.com/KilimcininKorOglu/zcode-api/actions/workflows/ci.yml)
 
 <img src="Android-APP/design/assets/zcode-app-icon.png" width="88" alt="ZCode Proxy icon" />
 
