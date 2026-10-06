@@ -31,6 +31,7 @@ import {
   type PanelSettings,
 } from "./server/panel.js";
 import { checkForUpdate } from "./update/check.js";
+import { formatDuration } from "./plan/auto.js";
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -388,7 +389,7 @@ export function createServeJobs(
       .then((m) => {
         claimPending = false;
         claimScheduler = m.startAutoClaim(config, auth);
-        console.log(`${indent}claim: auto ON (poll ${Math.round(config.claim.pollIntervalMs / 1000)}s${note})`);
+        console.log(`${indent}claim: auto ON (poll ${formatDuration(config.claim.pollIntervalSec * 1000)}${note})`);
       })
       .catch((err) => {
         claimPending = false;
@@ -409,7 +410,7 @@ export function createServeJobs(
       .then((m) => {
         planPending = false;
         planWatcher = m.startPlanAutoWatcher(config);
-        console.log(`${indent}plan auto-switch: ON (priority ${m.planPriorityOf(config).join(" > ")}; poll ${Math.round(m.planPollIntervalMsOf(config) / 1000)}s${note})`);
+        console.log(`${indent}plan auto-switch: ON (priority ${m.planPriorityOf(config).join(" > ")}; poll ${formatDuration(m.planPollIntervalMsOf(config))}${note})`);
       })
       .catch((err) => {
         planPending = false;

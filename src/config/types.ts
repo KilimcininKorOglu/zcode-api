@@ -162,8 +162,8 @@ export interface ClaimConfig {
   auto: boolean;
   /** Base origin of the zcode-plan billing endpoints. Default `"https://zcode.z.ai"`. */
   origin: string;
-  /** Preview poll interval in ms. Default `300000` (5 min). */
-  pollIntervalMs: number;
+  /** Preview poll interval in seconds. Default `300` (5 min). */
+  pollIntervalSec: number;
   /** Backoff after a failed claim attempt in ms. Default `600000` (10 min). */
   cooldownMs: number;
   /** Optional `plan_id` to claim; empty string claims the highest-priority preview. Default `""`. */

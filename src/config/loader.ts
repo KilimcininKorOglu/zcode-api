@@ -26,7 +26,7 @@ const ENV = {
   CLAIM_ENABLED: "ZCODE_CLAIM_ENABLED",
   CLAIM_AUTO: "ZCODE_CLAIM_AUTO",
   CLAIM_ORIGIN: "ZCODE_CLAIM_ORIGIN",
-  CLAIM_POLL_INTERVAL_MS: "ZCODE_CLAIM_POLL_INTERVAL_MS",
+  CLAIM_POLL_INTERVAL_SEC: "ZCODE_CLAIM_POLL_INTERVAL_SEC",
   ENDPOINT_ROUTING_ENABLED: "ZCODE_ENDPOINT_ROUTING",
   CLIENT_SIGNING_ENABLED: "ZCODE_CLIENT_SIGNING",
   MCP_GATEWAY_ENABLED: "ZCODE_MCP_GATEWAY",
@@ -82,7 +82,7 @@ const DEFAULTS = {
   CLAIM_ENABLED: true,
   CLAIM_AUTO: true,
   CLAIM_ORIGIN: "https://zcode.z.ai",
-  CLAIM_POLL_INTERVAL_MS: 300000,
+  CLAIM_POLL_INTERVAL_SEC: 300,
   CLAIM_COOLDOWN_MS: 600000,
   CLAIM_PLAN_ID: "",
   ENDPOINT_ROUTING_ENABLED: true,
@@ -488,7 +488,7 @@ function resolveClaimConfig(raw: unknown): ClaimConfig {
   const enabledEnv = process.env[ENV.CLAIM_ENABLED];
   const autoEnv = process.env[ENV.CLAIM_AUTO];
   const originEnv = process.env[ENV.CLAIM_ORIGIN];
-  const pollIntervalEnv = process.env[ENV.CLAIM_POLL_INTERVAL_MS];
+  const pollIntervalEnv = process.env[ENV.CLAIM_POLL_INTERVAL_SEC];
 
   const origin = (originEnv ?? (typeof obj.origin === "string" ? obj.origin : DEFAULTS.CLAIM_ORIGIN)).trim() || DEFAULTS.CLAIM_ORIGIN;
   validateOrigin(origin, "claim.origin");
@@ -497,7 +497,7 @@ function resolveClaimConfig(raw: unknown): ClaimConfig {
     enabled: enabledEnv !== undefined ? resolveBool(enabledEnv, DEFAULTS.CLAIM_ENABLED) : resolveBool(obj.enabled, DEFAULTS.CLAIM_ENABLED),
     auto: autoEnv !== undefined ? resolveBool(autoEnv, DEFAULTS.CLAIM_AUTO) : resolveBool(obj.auto, DEFAULTS.CLAIM_AUTO),
     origin,
-    pollIntervalMs: resolvePositiveInt(pollIntervalEnv ?? obj.pollIntervalMs ?? obj.poll_interval_ms, DEFAULTS.CLAIM_POLL_INTERVAL_MS, "claim.pollIntervalMs"),
+    pollIntervalSec: resolvePositiveInt(pollIntervalEnv ?? obj.pollIntervalSec, DEFAULTS.CLAIM_POLL_INTERVAL_SEC, "claim.pollIntervalSec"),
     cooldownMs: resolvePositiveInt(obj.cooldownMs ?? obj.cooldown_ms, DEFAULTS.CLAIM_COOLDOWN_MS, "claim.cooldownMs"),
     planId: typeof obj.planId === "string" ? obj.planId.trim() : DEFAULTS.CLAIM_PLAN_ID,
   };

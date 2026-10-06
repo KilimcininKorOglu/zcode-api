@@ -192,7 +192,7 @@ async:
 # client version (default 3.11.2) or the server rejects with `ineligible`.
 #
 # Env overrides: ZCODE_CLAIM_ENABLED, ZCODE_CLAIM_AUTO, ZCODE_CLAIM_ORIGIN,
-# ZCODE_CLAIM_POLL_INTERVAL_MS.
+# ZCODE_CLAIM_POLL_INTERVAL_SEC.
 claim:
   # On by default: the scheduler polls the preview endpoint every 5 min and
   # idles until a campaign goes live (404 preview = nothing to claim).
@@ -202,8 +202,8 @@ claim:
   # (`zcode-proxy claim` still works when `enabled: true`).
   auto: true
   origin: "https://zcode.z.ai"
-  # Preview poll cadence (5 min default).
-  pollIntervalMs: 300000
+  # Preview poll cadence in seconds (5 min default).
+  pollIntervalSec: 300
   # Backoff after failed attempts (10 min default); quota_exhausted /
   # already_claimed back off to the server-provided next window instead.
   cooldownMs: 600000

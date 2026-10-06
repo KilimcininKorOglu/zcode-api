@@ -30,7 +30,7 @@ beforeEach(() => {
   delete process.env.ZCODE_CLAIM_ENABLED;
   delete process.env.ZCODE_CLAIM_AUTO;
   delete process.env.ZCODE_CLAIM_ORIGIN;
-  delete process.env.ZCODE_CLAIM_POLL_INTERVAL_MS;
+  delete process.env.ZCODE_CLAIM_POLL_INTERVAL_SEC;
   delete process.env.ZCODE_MCP_GATEWAY;
   delete process.env.ZCODE_MCP_GATEWAY_ORIGIN;
   delete process.env.ZCODE_PLAN_AUTO_SWITCH;
@@ -364,7 +364,7 @@ logging:
       enabled: true,
       auto: true,
       origin: "https://zcode.z.ai",
-      pollIntervalMs: 300000,
+      pollIntervalSec: 300,
       cooldownMs: 600000,
       planId: "",
     });
@@ -519,7 +519,7 @@ claim:
   enabled: true
   auto: false
   origin: "https://zcode.z.ai"
-  pollIntervalMs: 60000
+  pollIntervalSec: 60
   cooldownMs: 120000
   planId: "weekend-special"
 `);
@@ -528,22 +528,22 @@ claim:
       enabled: true,
       auto: false,
       origin: "https://zcode.z.ai",
-      pollIntervalMs: 60000,
+      pollIntervalSec: 60,
       cooldownMs: 120000,
       planId: "weekend-special",
     });
   });
 
-  it("claim: ZCODE_CLAIM_ENABLED / ZCODE_CLAIM_POLL_INTERVAL_MS env override", () => {
+  it("claim: ZCODE_CLAIM_ENABLED / ZCODE_CLAIM_POLL_INTERVAL_SEC env override", () => {
     const path = writeYaml(`
 claim:
   enabled: false
 `);
     process.env.ZCODE_CLAIM_ENABLED = "true";
-    process.env.ZCODE_CLAIM_POLL_INTERVAL_MS = "45000";
+    process.env.ZCODE_CLAIM_POLL_INTERVAL_SEC = "45";
     const cfg = loadConfig(path);
     expect(cfg.claim.enabled).toBe(true);
-    expect(cfg.claim.pollIntervalMs).toBe(45000);
+    expect(cfg.claim.pollIntervalSec).toBe(45);
   });
 
   it("async: maxWaitMs=0 is allowed (non-negative, not positive)", () => {

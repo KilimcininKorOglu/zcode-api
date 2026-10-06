@@ -42,7 +42,7 @@ export function startAutoClaim(config: ProxyConfig, auth: AuthManager): ClaimSch
     },
     config: {
       planId: config.claim.planId || undefined,
-      pollIntervalMs: config.claim.pollIntervalMs,
+      pollIntervalMs: config.claim.pollIntervalSec * 1000,
       cooldownMs: config.claim.cooldownMs,
     },
     log: (message) => console.log(`[claim] ${message}`),
