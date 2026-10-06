@@ -1,5 +1,7 @@
 <div align="center">
 
+**English** | [Türkçe](README.tr.md)
+
 <img src="Android-APP/design/assets/zcode-app-icon.png" width="88" alt="ZCode Proxy icon" />
 
 # ZCode Proxy
