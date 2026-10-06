@@ -48,9 +48,9 @@ planAutoSwitch: false
 #   start-plan:
 #     limits: ["BALANCE"]
 
-# Auto-switch poll interval in seconds (default 30; a change applies live).
+# Auto-switch poll interval in seconds (default 600; a change applies live).
 # Env override: ZCODE_PLAN_POLL_INTERVAL_SEC
-# planPollIntervalSec: 30
+# planPollIntervalSec: 600
 
 providers:
   zai:
