@@ -67,11 +67,13 @@ planAutoSwitch: false
 # every statusPollIntervalSec (the official client's cadence) and spends a
 # held right when the 5h window crosses useThresholdPercent, when the right
 # is about to expire within expireGraceSec, or right after a coding-plan 429
-# (same request is retried on the reopened window). Requires \`auth login\`
+# (same request is retried on the reopened window; useOn429: false turns that
+# third trigger off). Requires \`auth login\`
 # (the zcode JWT); without it the feature stays passive.
 # planAutoReset:
 #   enabled: true
 #   useThresholdPercent: 90
+#   useOn429: true
 #   expireGraceSec: 600
 #   statusPollIntervalSec: 300
 

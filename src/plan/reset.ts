@@ -213,6 +213,7 @@ export async function maybeUsePlanResetAndRetry(args: {
 }): Promise<{ handled: boolean; resp?: Response }> {
   const cfg = planAutoResetOf(args.config);
   if (!cfg.enabled || args.plan !== "coding-plan" || cachedFiveHourResets.length === 0) return { handled: false };
+  if (!cfg.useOn429) return { handled: false };
   if (isTransient429(args.rejectionBody ?? null)) return { handled: false };
   const ok = await usePlanReset();
   if (!ok) return { handled: false };

@@ -239,6 +239,8 @@ export interface PlanAutoResetConfig {
   enabled: boolean;
   /** Spend a right when the 5h window's used share reaches this percent. Default 90. */
   useThresholdPercent: number;
+  /** Spend a right right after a coding-plan 429 and retry the request. Default true. */
+  useOn429: boolean;
   /** Spend a right when its remaining lifetime drops below this many seconds. Default 600. */
   expireGraceSec: number;
   /** Reset-status poll cadence in seconds (the official client polls every 300s). Default 300. */
@@ -249,6 +251,7 @@ export interface PlanAutoResetConfig {
 export const DEFAULT_PLAN_AUTO_RESET: PlanAutoResetConfig = {
   enabled: true,
   useThresholdPercent: 90,
+  useOn429: true,
   expireGraceSec: 600,
   statusPollIntervalSec: 300,
 };

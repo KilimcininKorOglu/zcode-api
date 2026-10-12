@@ -23,7 +23,7 @@ import type { Credential } from "../auth/types.js";
 function makeConfig(overrides: Partial<PlanAutoResetConfig> = {}): ProxyConfig {
   return {
     plan: "coding-plan",
-    planAutoReset: { enabled: true, useThresholdPercent: 90, expireGraceSec: 600, statusPollIntervalSec: 300, ...overrides },
+    planAutoReset: { enabled: true, useThresholdPercent: 90, useOn429: true, expireGraceSec: 600, statusPollIntervalSec: 300, ...overrides },
   } as ProxyConfig;
 }
 
@@ -229,6 +229,22 @@ describe("maybeUsePlanResetAndRetry", () => {
       rebuildAndDispatch: async () => new Response("ok"),
     });
     expect(outcome.handled).toBe(false);
+  });
+
+  it("skips the 429 trigger when useOn429 is off", async () => {
+    __setResetRightsForTests([Date.now() + 3600_000]);
+    let rebuilt = 0;
+    const outcome = await maybeUsePlanResetAndRetry({
+      plan: "coding-plan",
+      config: makeConfig({ useOn429: false }),
+      rejectionBody: '{"error":{"type":"rate_limit_error"}}',
+      rebuildAndDispatch: async () => {
+        rebuilt += 1;
+        return new Response("ok");
+      },
+    });
+    expect(outcome.handled).toBe(false);
+    expect(rebuilt).toBe(0);
   });
 });
 

@@ -241,6 +241,7 @@ Watcher her iki planın kotasını yoklar (`planPollIntervalSec`, default 30) ve
 planAutoReset:
   enabled: true
   useThresholdPercent: 90
+  useOn429: true
   expireGraceSec: 600
   statusPollIntervalSec: 300
 ```

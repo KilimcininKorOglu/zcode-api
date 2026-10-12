@@ -466,6 +466,7 @@ function resolvePlanAutoReset(raw: unknown): PlanAutoResetConfig {
   return {
     enabled: resolveBool(process.env[ENV.PLAN_AUTO_RESET] ?? obj.enabled, DEFAULT_PLAN_AUTO_RESET.enabled),
     useThresholdPercent: resolveBoundedInt(obj.useThresholdPercent, DEFAULT_PLAN_AUTO_RESET.useThresholdPercent, 1, 100, "planAutoReset.useThresholdPercent"),
+    useOn429: resolveBool(obj.useOn429, DEFAULT_PLAN_AUTO_RESET.useOn429),
     expireGraceSec: resolvePositiveInt(obj.expireGraceSec, DEFAULT_PLAN_AUTO_RESET.expireGraceSec, "planAutoReset.expireGraceSec"),
     statusPollIntervalSec: resolvePositiveInt(obj.statusPollIntervalSec, DEFAULT_PLAN_AUTO_RESET.statusPollIntervalSec, "planAutoReset.statusPollIntervalSec"),
   };

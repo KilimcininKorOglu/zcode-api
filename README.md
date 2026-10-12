@@ -240,6 +240,7 @@ The watcher polls both plans' quota (`planPollIntervalSec`, default 30) and serv
 planAutoReset:
   enabled: true
   useThresholdPercent: 90
+  useOn429: true
   expireGraceSec: 600
   statusPollIntervalSec: 300
 ```
