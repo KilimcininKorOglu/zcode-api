@@ -41,19 +41,20 @@ planAutoSwitch: false
 # Plan preference order for the auto-switch: the first plan with quota
 # serves every request. Defaults to [start-plan, coding-plan] (prefer the
 # trial). Coding-first example below: the coding plan serves until its 5-hour
-# (TIME_LIMIT) or weekly (WEEK_LIMIT) window empties, then start-plan takes
-# over. Env override: ZCODE_PLAN_PRIORITY (comma-separated).
+# (TOKENS_LIMIT), monthly (TIME_LIMIT) or weekly (WEEK_LIMIT) window empties,
+# then start-plan takes over. Env override: ZCODE_PLAN_PRIORITY (comma-separated).
 # planPriority:
 #   - coding-plan
 #   - start-plan
 
 # Which signals make each plan "not enough" for the switch (the first plan
 # in planPriority whose watched signals still have quota serves). coding-plan
-# rows are monitor-plane window types (TIME_LIMIT = 5h, WEEK_LIMIT = weekly);
-# start-plan watches the trial BALANCE. Omitted plan = watch every signal.
+# rows are monitor-plane window types (TOKENS_LIMIT = the 5h window,
+# TIME_LIMIT = monthly, WEEK_LIMIT = weekly); start-plan watches the trial
+# BALANCE. Omitted plan = watch every signal.
 # planSwitchRules:
 #   coding-plan:
-#     limits: ["TIME_LIMIT", "WEEK_LIMIT"]
+#     limits: ["TOKENS_LIMIT", "TIME_LIMIT", "WEEK_LIMIT"]
 #   start-plan:
 #     limits: ["BALANCE"]
 

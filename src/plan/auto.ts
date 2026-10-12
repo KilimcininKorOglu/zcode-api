@@ -4,7 +4,8 @@
  *
  * Signals per plan (config.planSwitchRules, default = every known one):
  *  - start-plan: BALANCE — the trial credits plane (`billing/balance`).
- *  - coding-plan: TIME_LIMIT / WEEK_LIMIT — the monitor-plane usage windows.
+ *  - coding-plan: TOKENS_LIMIT / TIME_LIMIT / WEEK_LIMIT — the monitor-plane
+ *    usage windows (5h / monthly / weekly).
  *
  * Two mechanisms, mirroring existing repo patterns:
  *  - A background watcher (`startPlanAutoWatcher`, ClaimScheduler skeleton in
@@ -52,6 +53,8 @@ interface PlanAutoState {
   fallbackCooldownUntil: number;
   lastCheckAt: number;
   lastError: string | null;
+  /** Latest watcher probe verdict per plan; null = no probe data yet (fail-open). */
+  usable: Record<PlanTier, boolean> | null;
 }
 
 const state: PlanAutoState = {
@@ -59,6 +62,7 @@ const state: PlanAutoState = {
   fallbackCooldownUntil: 0,
   lastCheckAt: 0,
   lastError: null,
+  usable: null,
 };
 
 /** Config accessor: the priority list (default mirrors today's behavior). */
@@ -113,10 +117,10 @@ export function activePlan(config: ProxyConfig): PlanTier {
  * consecutive 429s with no cooldown escape). Other 5xx stay put: generic
  * load/failure signals, not plan failures.
  *
- * coding-plan: 429 is the limit-exhaustion signal (the watched TIME_LIMIT /
- * WEEK_LIMIT windows hitting zero surface as 429s from the ultra gateway);
- * 502/504 are absorbed by the dispatch-level gateway retry and 401/402 are
- * credential problems switching plans cannot fix.
+ * coding-plan: 429 is the limit-exhaustion signal (the watched TOKENS_LIMIT /
+ * TIME_LIMIT / WEEK_LIMIT windows hitting zero surface as 429s from the ultra
+ * gateway); 502/504 are absorbed by the dispatch-level gateway retry and
+ * 401/402 are credential problems switching plans cannot fix.
  */
 export function shouldFallbackPlan(status: number, plan: PlanTier): boolean {
   if (plan === "start-plan") {
@@ -179,10 +183,16 @@ export interface PlanFallbackOutcome {
  * when the serving plan rejected the request (error status OR a 200 JSON
  * error envelope, both detected by the caller), run the caller's next-plan
  * rebuild + dispatch ONCE with the target plan and record the cooldown first
- * so concurrent requests skip the broken plan. Runs only while
- * `planAutoSwitch` is on (the caller guards it) — with the flag off, plan
- * selection is entirely the operator's config. `rebuildAndDispatch` errors
- * propagate to the caller, which maps them onto its own 502 path.
+ * so concurrent requests skip the broken plan. A plan whose LATEST watcher
+ * probe reported it empty is never a fallback target — the trial gateway
+ * answers such requests with content-less 200s instead of a rejection, so
+ * falling there serves the client nothing (live 2026-10-13: start-plan
+ * "no buckets" answered 12 requests with 200 and zero tokens). When no probe
+ * has landed yet the target is tried (fail-open, as with an unseen probe).
+ * Runs only while `planAutoSwitch` is on (the caller guards it) — with the
+ * flag off, plan selection is entirely the operator's config.
+ * `rebuildAndDispatch` errors propagate to the caller, which maps them onto
+ * its own 502 path.
  */
 export async function retryOnPlanExhausted(args: {
   rejected: boolean;
@@ -194,6 +204,7 @@ export async function retryOnPlanExhausted(args: {
   if (!args.rejected) return { handled: false };
   const target = nextPlanInPriority(args.priority, args.plan);
   if (target === null) return { handled: false };
+  if (state.usable !== null && state.usable[target] === false) return { handled: false };
   notePlanFallback(args.plan, target, args.onFallback);
   const resp = await args.rebuildAndDispatch(target);
   return { handled: true, target, resp };
@@ -310,6 +321,7 @@ export function startPlanAutoWatcher(config: ProxyConfig, deps: PlanAutoWatcherD
 
       state.lastError = errors.length > 0 ? errors.join("; ") : null;
       const usable: Record<PlanTier, boolean> = { "start-plan": startUsable, "coding-plan": codingUsableNow };
+      state.usable = usable;
       // One readable probe line per tick that saw real data (visible quota
       // drift in the logs; silence when nothing was observed).
       const line = formatPollLine(
@@ -467,6 +479,12 @@ export function __resetPlanAutoStateForTests(): void {
   state.fallbackCooldownUntil = 0;
   state.lastCheckAt = 0;
   state.lastError = null;
+  state.usable = null;
+}
+
+/** Seed the last-probe verdict directly (tests only). */
+export function __setLastUsableForTests(usable: Record<PlanTier, boolean>): void {
+  state.usable = { ...state.usable, ...usable };
 }
 
 /** Place the fallback cooldown at an absolute time (tests only). */

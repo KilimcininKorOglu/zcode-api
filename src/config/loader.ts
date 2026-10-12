@@ -371,8 +371,8 @@ function resolvePlan(raw: unknown): "coding-plan" | "start-plan" {
 }
 
 const PLAN_TIERS: readonly string[] = ["coding-plan", "start-plan"];
-/** Monitor-plane limit types a coding-plan rule may watch. */
-const CODING_LIMIT_TYPES: readonly string[] = ["TIME_LIMIT", "WEEK_LIMIT"];
+/** Monitor-plane limit types a coding-plan rule may watch (TOKENS_LIMIT = the 5h window, TIME_LIMIT = monthly, WEEK_LIMIT = weekly). */
+const CODING_LIMIT_TYPES: readonly string[] = ["TOKENS_LIMIT", "TIME_LIMIT", "WEEK_LIMIT"];
 /** Signals a start-plan rule may watch (the trial credits plane). */
 const START_LIMIT_TYPES: readonly string[] = ["BALANCE"];
 

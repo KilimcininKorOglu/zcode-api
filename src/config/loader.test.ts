@@ -149,7 +149,7 @@ server:
 provider: zai
 `);
     expect(loadConfig(path).planSwitchRules).toEqual({
-      "coding-plan": { limits: ["TIME_LIMIT", "WEEK_LIMIT"] },
+      "coding-plan": { limits: ["TOKENS_LIMIT", "TIME_LIMIT", "WEEK_LIMIT"] },
       "start-plan": { limits: ["BALANCE"] },
     });
   });
@@ -178,7 +178,7 @@ planSwitchRules:
   coding-plan:
     limits: ["DAILY_LIMIT"]
 `);
-    expect(() => loadConfig(bad)).toThrow(/must be one of TIME_LIMIT, WEEK_LIMIT/);
+    expect(() => loadConfig(bad)).toThrow(/must be one of TOKENS_LIMIT, TIME_LIMIT, WEEK_LIMIT/);
     const empty = writeYaml(`
 server:
   port: 9090

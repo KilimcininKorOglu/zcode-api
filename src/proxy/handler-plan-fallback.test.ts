@@ -12,7 +12,7 @@ import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { proxyRequest } from "./handler.js";
-import { activePlan, __resetPlanAutoStateForTests } from "../plan/auto.js";
+import { activePlan, __resetPlanAutoStateForTests, __setLastUsableForTests } from "../plan/auto.js";
 import type { ProxyConfig, ProxyIdentity } from "../config/types.js";
 import { AuthManager } from "../auth/manager.js";
 import { captureConsoleLog } from "./handler-debug.test.js";
@@ -323,6 +323,40 @@ describe("proxyRequest — hybrid plan fallback", () => {
     expect(resp.status).toBe(429);
     const body = (await resp.json()) as { error?: { type?: string; message?: string } };
     expect(body.error?.type).toBe("plan_quota_exhausted");
+  });
+
+  it("does not fall back to a plan whose latest probe reported it empty (live 2026-10-13)", async () => {
+    // Coding-first traffic hit the 5h window with the trial plan holding no
+    // token buckets: the fallback used to land on start-plan and the gateway
+    // answered content-less 200s. The empty probe verdict now blocks it —
+    // the client gets the honest 429 instead.
+    __setLastUsableForTests({ "coding-plan": true, "start-plan": false });
+    const calls: RecordedCall[] = [];
+    const config: ProxyConfig = {
+      ...TEST_CONFIG,
+      plan: "coding-plan",
+      planAutoSwitch: true,
+      planPriority: ["coding-plan", "start-plan"],
+    };
+    const fetchImpl = Object.assign(
+      (async (req: Request): Promise<Response> => {
+        calls.push({
+          url: req.url,
+          authorization: req.headers.get("authorization"),
+          apiKey: req.headers.get("x-api-key"),
+          body: await req.clone().text(),
+        });
+        return new Response("rate limited", { status: 429 });
+      }) as typeof fetch,
+      { preconnect: () => {} },
+    ) as typeof fetch;
+    const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toContain("https://api.z.ai/api/anthropic");
+    expect(resp.status).toBe(429);
+    // Nothing pinned: no cooldown, no effective-plan change.
+    expect(activePlan(config)).toBe("coding-plan");
   });
 
   it("does not fall back when the serving plan is last in priority", async () => {

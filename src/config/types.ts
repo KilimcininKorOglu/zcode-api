@@ -213,9 +213,9 @@ export const DEFAULT_PLAN_POLL_INTERVAL_SEC = 30;
 /**
  * Per-plan exhaustion rule: the upstream signals that make the plan "not
  * enough" so the next plan in `planPriority` takes over. coding-plan rows are
- * monitor-plane limit types (TIME_LIMIT = the 5h window, WEEK_LIMIT = the
- * weekly window); start-plan has the single BALANCE signal (the trial credits
- * plane).
+ * monitor-plane limit types (TOKENS_LIMIT = the 5h window, TIME_LIMIT = the
+ * monthly period, WEEK_LIMIT = the weekly window, not yet reported upstream);
+ * start-plan has the single BALANCE signal (the trial credits plane).
  */
 export interface PlanSwitchRule {
   limits: string[];
@@ -223,7 +223,7 @@ export interface PlanSwitchRule {
 
 /** Default rules: every known signal of each plan is watched. */
 export const DEFAULT_PLAN_SWITCH_RULES: { "coding-plan": PlanSwitchRule; "start-plan": PlanSwitchRule } = {
-  "coding-plan": { limits: ["TIME_LIMIT", "WEEK_LIMIT"] },
+  "coding-plan": { limits: ["TOKENS_LIMIT", "TIME_LIMIT", "WEEK_LIMIT"] },
   "start-plan": { limits: ["BALANCE"] },
 };
 

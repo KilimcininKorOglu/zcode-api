@@ -17,15 +17,17 @@ import {
   planPriorityOf,
   planWatchedLimitsOf,
   readableReset,
+  retryOnPlanExhausted,
   shouldFallbackPlan,
   sniffStartPlanRejection,
   startPlanAutoWatcher,
   PLAN_FALLBACK_COOLDOWN_MS,
   __resetPlanAutoStateForTests,
   __setFallbackCooldownForTests,
+  __setLastUsableForTests,
 } from "./auto.js";
 import type { QuotaBalanceEntry } from "../server/routes-quota.js";
-import type { ProxyConfig } from "../config/types.js";
+import type { PlanTier, ProxyConfig } from "../config/types.js";
 
 /** Minimal config fixture — the watcher reads plan*, claim.origin and providers.*.openaiBase. */
 function makeConfig(overrides: Partial<ProxyConfig> = {}): ProxyConfig {
@@ -73,7 +75,7 @@ describe("hasUsableBalance", () => {
 describe("config accessors", () => {
   it("fall back to the shipped defaults when the keys are absent", () => {
     expect(planPriorityOf(makeConfig())).toEqual(["start-plan", "coding-plan"]);
-    expect(planWatchedLimitsOf(makeConfig(), "coding-plan")).toEqual(["TIME_LIMIT", "WEEK_LIMIT"]);
+    expect(planWatchedLimitsOf(makeConfig(), "coding-plan")).toEqual(["TOKENS_LIMIT", "TIME_LIMIT", "WEEK_LIMIT"]);
     expect(planWatchedLimitsOf(makeConfig(), "start-plan")).toEqual(["BALANCE"]);
     expect(planPollIntervalMsOf(makeConfig())).toBe(30_000);
   });
@@ -385,6 +387,52 @@ describe("poll line formatting", () => {
     );
     expect(formatPollLine("coding-plan", null, null, now)).toBeNull();
     expect(formatPollLine("coding-plan", { ok: false, balances: [], error: "balance: 3001 parameter error" }, null, now)).toBeNull();
+  });
+});
+
+describe("retryOnPlanExhausted skips an empty fallback target", () => {
+  /** Build args whose rebuild always succeeds on the given target. */
+  function argsFor(plan: PlanTier, onFallback?: (m: string) => void) {
+    const rebuilt: PlanTier[] = [];
+    return {
+      args: {
+        rejected: true,
+        plan,
+        priority: ["coding-plan", "start-plan"] as PlanTier[],
+        rebuildAndDispatch: async (target: PlanTier) => {
+          rebuilt.push(target);
+          return new Response("ok");
+        },
+        onFallback,
+      },
+      rebuilt,
+    };
+  }
+
+  it("never lands on a plan whose latest probe reported it empty (live 2026-10-13 incident)", async () => {
+    __setLastUsableForTests({ "coding-plan": true, "start-plan": false });
+    const { args, rebuilt } = argsFor("coding-plan");
+    const outcome = await retryOnPlanExhausted(args);
+    expect(outcome.handled).toBe(false);
+    expect(rebuilt).toEqual([]);
+    // No cooldown either: nothing was pinned by the skipped fallback.
+    expect(activePlan(makeConfig({ planPriority: ["coding-plan", "start-plan"] }))).toBe("coding-plan");
+  });
+
+  it("still falls back when no probe has landed yet (fail-open)", async () => {
+    const { args, rebuilt } = argsFor("coding-plan");
+    const outcome = await retryOnPlanExhausted(args);
+    expect(outcome.handled).toBe(true);
+    expect(outcome.target).toBe("start-plan");
+    expect(rebuilt).toEqual(["start-plan"]);
+  });
+
+  it("falls back normally when the target's probe says usable", async () => {
+    __setLastUsableForTests({ "coding-plan": true, "start-plan": true });
+    const { args, rebuilt } = argsFor("coding-plan");
+    const outcome = await retryOnPlanExhausted(args);
+    expect(outcome.handled).toBe(true);
+    expect(rebuilt).toEqual(["start-plan"]);
   });
 });
 
