@@ -234,6 +234,16 @@ planSwitchRules:
 
 The watcher polls both plans' quota (`planPollIntervalSec`, default 30) and serves the first plan in `planPriority` whose watched signals still have quota; a request the plan rejects also falls to the next plan for that one request. The fallback never lands on a plan whose latest probe reported it empty (a trial plan with no token buckets is skipped and the client sees the honest rejection instead). Everything above (watcher + fallback) runs only while `planAutoSwitch` is on: off means no auto-switching and no fallback at all.
 
+**Automatic 5h-window reset rights** (the "🎁 N reset available" gifts the ZCode panel shows): with `planAutoReset` (default on), the proxy polls `GET /api/v1/coding-plan/reset/status` every `statusPollIntervalSec` (default 300s, the official client's cadence) and spends a held FIVE_HOUR right when the 5h window crosses `useThresholdPercent` (default 90), when the right is about to expire within `expireGraceSec` (default 600s), or right after a coding-plan 429 — in that case the SAME request is retried on the reopened window and the plan fallback never runs. Transient rate-limit 429s (business codes 1302/1303/1305/1312 per ZCode's own classification) never trigger a spend. Requires `auth login` (the zcode JWT); without it the feature stays passive. Master switch env override: `ZCODE_PLAN_AUTO_RESET`.
+
+```yaml
+planAutoReset:
+  enabled: true
+  useThresholdPercent: 90
+  expireGraceSec: 600
+  statusPollIntervalSec: 300
+```
+
 **Editing config.yaml without a restart**: the running proxy watches the file and applies edits in place (watch for the `[config] reloaded: ...` log line). Flipping `claim.auto`, `planAutoSwitch` or `plan` also starts or stops the matching background job, and changing `planPollIntervalSec` restarts the watcher with the new cadence; a broken file keeps the running config and stays watching. Only `server` (port/host) needs a restart.
 
 For servers without a TUI, use a browser instead: set `ZCODE_PANEL_ENABLED=1` and `ZCODE_PANEL_TOKEN=<your-own-random-string>`, start, then forward `http://127.0.0.1:8090` over SSH — you can view status and quota, switch provider/plan, log in/out, watch live logs and the MCP list. The panel binds loopback only, requires the token on every API call, and never starts without a token; commands are dispatched in-process so no extra control port is opened. "Stop proxy" on the panel only stops the proxy — the process itself still exits cleanly (SIGTERM/SIGINT and panel shutdown both clear background timers — auto-claim, captcha pool — before exit); logging out from the panel also clears the running credential and stops the proxy so new requests cannot keep spending the old account's quota.

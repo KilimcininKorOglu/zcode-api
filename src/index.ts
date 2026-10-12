@@ -26,6 +26,7 @@ import {
 } from "./server/panel.js";
 import { checkForUpdate } from "./update/check.js";
 import { formatDuration } from "./plan/auto.js";
+import { planAutoResetOf } from "./plan/reset.js";
 import { LogBuffer, createControlDispatcher, type ControlState } from "./control.js";
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -360,11 +361,13 @@ export function createServeJobs(
   const note = jobLabels.note ?? "";
   let claimScheduler: { stop: () => void } | null = null;
   let planWatcher: { stop: () => void } | null = null;
+  let resetPoller: { stop: () => void } | null = null;
   let captchaModule: { shutdownCaptcha: () => void } | null = null;
   // The dynamic imports resolve asynchronously; the pending flags keep a
   // config reload racing the first start from double-starting a job.
   let claimPending = false;
   let planPending = false;
+  let resetPending = false;
   let captchaPoolStarted = false;
 
   const startClaimJob = (): void => {
@@ -409,6 +412,27 @@ export function createServeJobs(
     planWatcher = null;
     console.log(`${indent}plan auto-switch: OFF`);
   };
+  const startPlanResetJob = (): void => {
+    stopPlanResetJob(); // restart-safe: a dirty planAutoReset block re-runs this
+    resetPending = true;
+    import("./plan/reset.js")
+      .then((m) => {
+        resetPending = false;
+        resetPoller = m.startPlanResetPoller(config);
+        console.log(`${indent}plan reset: auto ON (poll ${formatDuration(m.planAutoResetOf(config).statusPollIntervalSec * 1000)}${note})`);
+      })
+      .catch((err) => {
+        resetPending = false;
+        console.error(`[plan] reset poller failed to start: ${(err as Error).message}`);
+      });
+  };
+  const stopPlanResetJob = (): void => {
+    resetPending = false;
+    if (!resetPoller) return;
+    resetPoller.stop();
+    resetPoller = null;
+    console.log(`${indent}plan reset: auto OFF`);
+  };
   const warmCaptchaPoolJob = (): void => {
     if (captchaPoolStarted || config.plan !== "start-plan") return;
     // Pre-solve the captcha token pool in the background so first requests
@@ -430,6 +454,7 @@ export function createServeJobs(
       if (config.plan === "start-plan") warmCaptchaPoolJob();
       if (config.claim.enabled && config.claim.auto) startClaimJob();
       if (config.planAutoSwitch) startPlanWatcherJob();
+      if (planAutoResetOf(config).enabled) startPlanResetJob();
     },
     handles: {
       claimRunning: () => claimScheduler !== null || claimPending,
@@ -438,27 +463,29 @@ export function createServeJobs(
       planWatcherRunning: () => planWatcher !== null || planPending,
       startPlanWatcher: startPlanWatcherJob,
       stopPlanWatcher: stopPlanWatcherJob,
+      resetPollerRunning: () => resetPoller !== null || resetPending,
+      startPlanResetPoller: startPlanResetJob,
+      stopPlanResetPoller: stopPlanResetJob,
       warmCaptchaPool: warmCaptchaPoolJob,
     },
     stopForShutdown(cleared) {
-      if (planWatcher) {
+      // One stop-and-report step per background job; each failure mode is a
+      // "never started / already stopped" no-op, not an error.
+      const stopJob = (label: string, job: { stop: () => void } | null): void => {
+        if (!job) return;
         try {
-          planWatcher.stop();
-          cleared.push("plan auto-switch");
+          job.stop();
+          cleared.push(label);
         } catch {
           /* already stopped */
         }
-        planWatcher = null;
-      }
-      if (claimScheduler) {
-        try {
-          claimScheduler.stop();
-          cleared.push("auto-claim");
-        } catch {
-          /* already stopped */
-        }
-        claimScheduler = null;
-      }
+      };
+      stopJob("plan auto-switch", planWatcher);
+      planWatcher = null;
+      stopJob("plan reset poller", resetPoller);
+      resetPoller = null;
+      stopJob("auto-claim", claimScheduler);
+      claimScheduler = null;
       if (captchaModule) {
         try {
           captchaModule.shutdownCaptcha();

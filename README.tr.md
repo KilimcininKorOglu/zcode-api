@@ -235,6 +235,16 @@ planSwitchRules:
 
 Watcher her iki planın kotasını yoklar (`planPollIntervalSec`, default 30) ve `planPriority` içinde izlenen sinyallerinde kotasi kalan ilk planı servis eder; reddedilen istek o istek için sıradaki plana da düşer. Fallback, son yoklamada kotasi boş raporlanan bir plana hiç düşmez (token bucket'ı olmayan deneme planı atlanır, client dürüst reddi görür). Yukarıdakilerin hepsi (watcher + fallback) yalnız `planAutoSwitch` açıkken çalışır: off demek ne auto-switch ne fallback demektir.
 
+**Otomatik 5 saatlik pencere reset hakkı** (ZCode panelinin "🎁 N reset available" hediyesi): `planAutoReset` (default açık) ile proxy her `statusPollIntervalSec`te (default 300 sn, resmi client'ın ritmi) `GET /api/v1/coding-plan/reset/status` uçunu yoklar ve eldeki FIVE_HOUR hakkını şu durumlarda harcar: 5h pencere kullanımı `useThresholdPercent`i (default 90) aşarsa, hakkın ömrü `expireGraceSec`in (default 600 sn) altına inerse ya da coding-plan bir 429 dönerse; bu son durumda AYNI istek yeni açılan pencerede tekrar denenir, plan fallback'i hiç çalışmaz. ZCode'un kendi sınıflandırmasındaki geçici hız sınırlaması 429'ları (business code 1302/1303/1305/1312) harcama tetiklemez. `auth login` gerekir (zcode JWT); yoksa özellik pasif kalır. Ana anahtar env override'ı: `ZCODE_PLAN_AUTO_RESET`.
+
+```yaml
+planAutoReset:
+  enabled: true
+  useThresholdPercent: 90
+  expireGraceSec: 600
+  statusPollIntervalSec: 300
+```
+
 **config.yaml'ı restart olmadan düzenleme**: çalışan proxy dosyayı izler ve değişikliği yerinde uygular (`[config] reloaded: ...` log satırını izleyin). `claim.auto`, `planAutoSwitch` ya da `plan`ı değiştirmek ilgili arka plan işini başlatır/durdurur; `planPollIntervalSec`i değiştirmek watcher'ı yeni ritimle yeniden başlatır; bozuk bir dosya çalışan config'i korur ve izlemeye devam eder. Yalnız `server` (port/host) restart ister.
 
 TUI'siz sunucularda tarayıcıyı kullanın: `ZCODE_PANEL_ENABLED=1` ve `ZCODE_PANEL_TOKEN=<kendi-rastgele-stringiniz>` verip başlatın, sonra `http://127.0.0.1:8090` adresini SSH ile ileriye taşıyın; durum ve kotayı görebilir, provider/plan değiştirebilir, login/logout yapabilir, canlı logları ve MCP listesini izleyebilirsiniz. Panel yalnız loopback'e bağlanır, her API çağrısında token ister ve tokensız asla başlamaz; komutlar in-process dağıtılır, ekstra bir kontrol portu açılmaz. Paneldaki "Stop proxy" yalnız proxy'yi durdurur; sürecin kendisi temiz çıkar (SIGTERM/SIGINT ve panel shutdown çıkıştan önce arka plan zamanlayıcılarını, yani auto-claim'i ve captcha pool'unu temizler); panelden logout çalışan credential'ı da temizler ve proxy'yi durdurur, böylece yeni istekler eski hesabın kotasını harcayamaz.

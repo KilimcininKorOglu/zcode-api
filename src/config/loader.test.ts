@@ -191,6 +191,50 @@ planSwitchRules:
   });
 });
 
+describe("planAutoReset", () => {
+  it("defaults to on with 90 / 600 / 300 when the block is absent", () => {
+    const path = writeYaml(`
+server:
+  port: 9090
+provider: zai
+`);
+    expect(loadConfig(path).planAutoReset).toEqual({
+      enabled: true,
+      useThresholdPercent: 90,
+      expireGraceSec: 600,
+      statusPollIntervalSec: 300,
+    });
+  });
+
+  it("reads the block and throws on an out-of-range percent", () => {
+    const path = writeYaml(`
+server:
+  port: 9090
+provider: zai
+planAutoReset:
+  enabled: true
+  useThresholdPercent: 150
+`);
+    expect(() => loadConfig(path)).toThrow(/useThresholdPercent must be between 1 and 100/);
+  });
+
+  it("lets ZCODE_PLAN_AUTO_RESET turn the feature off", () => {
+    const path = writeYaml(`
+server:
+  port: 9090
+provider: zai
+planAutoReset:
+  enabled: true
+`);
+    process.env.ZCODE_PLAN_AUTO_RESET = "off";
+    try {
+      expect(loadConfig(path).planAutoReset?.enabled).toBe(false);
+    } finally {
+      delete process.env.ZCODE_PLAN_AUTO_RESET;
+    }
+  });
+});
+
 describe("planPollIntervalSec", () => {
   it("defaults to 30 seconds when the key is absent", () => {
     const path = writeYaml(`

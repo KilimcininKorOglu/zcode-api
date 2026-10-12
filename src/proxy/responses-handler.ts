@@ -69,6 +69,7 @@ import {
 import { ResponseStore, type StoredResponse } from "../responses/store.js";
 import { errorResponse, readBody, InflatedBodyTooLargeError, unreachableMessage } from "./handler.js";
 import { activePlan, planPriorityOf, retryOnPlanExhausted, shouldFallbackPlan, sniffStartPlanRejection, type PlanTier } from "../plan/auto.js";
+import { maybeUsePlanResetAndRetry } from "../plan/reset.js";
 
 export interface ResponsesHandlerOptions {
   config: ProxyConfig;
@@ -287,6 +288,30 @@ export async function handleResponses(
     return errorResponse(502, "upstream_unreachable", unreachableMessage(err));
   }
 
+  // Rebuild for one plan tier, shared by the auto-reset retry and the plan
+  // fallback below (mirrors handler.ts's rebuildForPlan).
+  const rebuildForPlan = async (target: PlanTier): Promise<Response> => {
+    transformedBody = transformRequestBody(anthropicJson, {
+      format: "anthropic",
+      metadataUserId,
+      startPlan: target === "start-plan",
+      provider: opts.config.provider,
+    }) ?? anthropicJson;
+    upstreamHeaders = buildUpstreamHeaderPairs(clientReq, upstreamFormat, cred, opts.config.identity, target, undefined, undefined);
+    upstreamReq = buildUpstreamRequest(clientReq, upstreamFormat, providerDef, cred, transformedBody, opts.config.identity, target, undefined, undefined);
+    return dispatch(upstreamHeaders);
+  };
+
+  // Auto reset-right use (mirrors handler.ts): a coding-plan 429 with a held
+  // FIVE_HOUR right spends it and retries the SAME request on the reopened
+  // window, independent of planAutoSwitch; transient rate-limit bodies block
+  // the spend.
+  if (plan === "coding-plan" && upstreamResp.status === 429) {
+    const rejectionBody = (await upstreamResp.clone().text().catch(() => null))?.slice(0, 65536) ?? null;
+    const reset = await maybeUsePlanResetAndRetry({ plan, config: opts.config, rejectionBody, rebuildAndDispatch: rebuildForPlan });
+    if (reset.handled && reset.resp) upstreamResp = reset.resp;
+  }
+
   // Hybrid plan auto-switch (mirrors handler.ts, only while planAutoSwitch
   // is on — with it off, plan selection is entirely the operator's config):
   // on a rejected plan retry the SAME request once on the NEXT plan in
@@ -311,17 +336,7 @@ export async function handleResponses(
           console.log(`[responses] ${message}`);
           appendErrorLog({ kind: "plan_fallback", reqId: "[responses]", message, ...traceFields });
         },
-        rebuildAndDispatch: (target) => {
-          transformedBody = transformRequestBody(anthropicJson, {
-            format: "anthropic",
-            metadataUserId,
-            startPlan: target === "start-plan",
-            provider: opts.config.provider,
-          }) ?? anthropicJson;
-          upstreamHeaders = buildUpstreamHeaderPairs(clientReq, upstreamFormat, cred, opts.config.identity, target, undefined, undefined);
-          upstreamReq = buildUpstreamRequest(clientReq, upstreamFormat, providerDef, cred, transformedBody, opts.config.identity, target, undefined, undefined);
-          return dispatch(upstreamHeaders);
-        },
+        rebuildAndDispatch: rebuildForPlan,
       });
       if (outcome.handled && outcome.resp) {
         plan = outcome.target ?? plan;

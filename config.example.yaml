@@ -53,6 +53,20 @@ planAutoSwitch: false
 # Env override: ZCODE_PLAN_POLL_INTERVAL_SEC
 # planPollIntervalSec: 60
 
+# Automatic use of the upstream 5h-window reset rights (the "🎁 N reset
+# available" gifts the ZCode panel shows). The proxy polls the reset plane
+# every statusPollIntervalSec (the official client's cadence) and spends a
+# held right when the 5h window crosses useThresholdPercent, when the right
+# is about to expire within expireGraceSec, or right after a coding-plan 429
+# (same request is retried on the reopened window). Requires `auth login`
+# (the zcode JWT); without it the feature stays passive. Master switch env
+# override: ZCODE_PLAN_AUTO_RESET.
+# planAutoReset:
+#   enabled: true
+#   useThresholdPercent: 90
+#   expireGraceSec: 600
+#   statusPollIntervalSec: 300
+
 providers:
   zai:
     anthropicBase: "https://api.z.ai/api/anthropic"

@@ -4,8 +4,8 @@
  */
 import { readFileSync, existsSync } from "node:fs";
 import { parse } from "yaml";
-import type { ClientIdentityConfig, PlanSwitchRule, PlanTier, ProxyConfig, ProviderEndpoints, ProxyIdentity, ResponsesConfig, McpConfig, AsyncConfig, EndpointRoutingConfig, ClientSigningConfig, ClaimConfig } from "./types.js";
-import { DEFAULT_PLAN_PRIORITY, DEFAULT_PLAN_POLL_INTERVAL_SEC, DEFAULT_PLAN_SWITCH_RULES } from "./types.js";
+import type { ClientIdentityConfig, PlanAutoResetConfig, PlanSwitchRule, PlanTier, ProxyConfig, ProviderEndpoints, ProxyIdentity, ResponsesConfig, McpConfig, AsyncConfig, EndpointRoutingConfig, ClientSigningConfig, ClaimConfig } from "./types.js";
+import { DEFAULT_PLAN_AUTO_RESET, DEFAULT_PLAN_PRIORITY, DEFAULT_PLAN_POLL_INTERVAL_SEC, DEFAULT_PLAN_SWITCH_RULES } from "./types.js";
 
 /** Environment variable keys that override YAML values. */
 const ENV = {
@@ -13,6 +13,7 @@ const ENV = {
   PROXY_API_KEY: "ZCODE_PROXY_API_KEY",
   PROVIDER: "ZCODE_PROVIDER",
   PLAN_AUTO_SWITCH: "ZCODE_PLAN_AUTO_SWITCH",
+  PLAN_AUTO_RESET: "ZCODE_PLAN_AUTO_RESET",
   PLAN_PRIORITY: "ZCODE_PLAN_PRIORITY",
   PLAN_POLL_INTERVAL_SEC: "ZCODE_PLAN_POLL_INTERVAL_SEC",
   BATCH_AS_STREAM: "ZCODE_BATCH_AS_STREAM",
@@ -120,6 +121,7 @@ export function loadConfig(path: string): ProxyConfig {
   const planAutoSwitch = resolveBool(process.env[ENV.PLAN_AUTO_SWITCH] ?? parsed?.planAutoSwitch, DEFAULTS.PLAN_AUTO_SWITCH);
   const planPriority = resolvePlanPriority(process.env[ENV.PLAN_PRIORITY] ?? parsed?.planPriority);
   const planSwitchRules = resolvePlanSwitchRules(parsed?.planSwitchRules);
+  const planAutoReset = resolvePlanAutoReset(parsed?.planAutoReset);
   const planPollIntervalSec = resolvePositiveInt(
     process.env[ENV.PLAN_POLL_INTERVAL_SEC] ?? parsed?.planPollIntervalSec,
     DEFAULTS.PLAN_POLL_INTERVAL_SEC,
@@ -171,6 +173,7 @@ export function loadConfig(path: string): ProxyConfig {
     planAutoSwitch,
     planPriority,
     planSwitchRules,
+    planAutoReset,
     planPollIntervalSec,
     batchAsStream,
     providers: { zai, bigmodel },
@@ -445,6 +448,26 @@ function resolvePlanSwitchRules(raw: unknown): { "coding-plan": PlanSwitchRule; 
   return {
     "coding-plan": resolvePlanSwitchRule(obj["coding-plan"], CODING_LIMIT_TYPES, "planSwitchRules.coding-plan"),
     "start-plan": resolvePlanSwitchRule(obj["start-plan"], START_LIMIT_TYPES, "planSwitchRules.start-plan"),
+  };
+}
+
+/** One planAutoReset integer field, bounded (a percent outside 1-100 is a config mistake). */
+function resolveBoundedInt(raw: unknown, fallback: number, min: number, max: number, name: string): number {
+  const n = resolvePositiveInt(raw, fallback, name);
+  if (n < min || n > max) {
+    throw new Error(`${name} must be between ${min} and ${max}`);
+  }
+  return n;
+}
+
+/** Resolve the planAutoReset block; the master switch reads its env override first. */
+function resolvePlanAutoReset(raw: unknown): PlanAutoResetConfig {
+  const obj = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  return {
+    enabled: resolveBool(process.env[ENV.PLAN_AUTO_RESET] ?? obj.enabled, DEFAULT_PLAN_AUTO_RESET.enabled),
+    useThresholdPercent: resolveBoundedInt(obj.useThresholdPercent, DEFAULT_PLAN_AUTO_RESET.useThresholdPercent, 1, 100, "planAutoReset.useThresholdPercent"),
+    expireGraceSec: resolvePositiveInt(obj.expireGraceSec, DEFAULT_PLAN_AUTO_RESET.expireGraceSec, "planAutoReset.expireGraceSec"),
+    statusPollIntervalSec: resolvePositiveInt(obj.statusPollIntervalSec, DEFAULT_PLAN_AUTO_RESET.statusPollIntervalSec, "planAutoReset.statusPollIntervalSec"),
   };
 }
 

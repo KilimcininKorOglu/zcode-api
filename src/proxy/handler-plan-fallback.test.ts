@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { proxyRequest } from "./handler.js";
 import { activePlan, __resetPlanAutoStateForTests, __setLastUsableForTests } from "../plan/auto.js";
+import { __resetPlanResetStateForTests, __setResetRightsForTests, __setPlanResetDepsForTests } from "../plan/reset.js";
 import type { ProxyConfig, ProxyIdentity } from "../config/types.js";
 import { AuthManager } from "../auth/manager.js";
 import { captureConsoleLog } from "./handler-debug.test.js";
@@ -60,6 +61,21 @@ const ANTHROPIC_OK = JSON.stringify({
 
 beforeEach(() => {
   __resetPlanAutoStateForTests();
+  __resetPlanResetStateForTests();
+  // The reset plane's /use never hits the network from a handler test: a
+  // stubbed transport answers success, and the credential is never read from
+  // the real store.
+  const resetFetch = Object.assign(
+    (async (input: string | Request) => {
+      const url = typeof input === "string" ? input : input.url;
+      return new Response(url.includes("/reset/use") ? '{"code":0,"msg":"success"}' : '{"code":0,"data":{"available_five_hour_resets":[]}}');
+    }) as typeof fetch,
+    { preconnect: () => {} },
+  ) as typeof fetch;
+  __setPlanResetDepsForTests({
+    fetchImpl: resetFetch,
+    loadCredentialImpl: async () => ({ apiKey: "key", provider: "zai", jwt: "jwt-mock" }),
+  });
   // Deterministic captcha stub: the prewarm takes tok-1, no challenge is
   // detected on 402/401/403 responses (header-only detection).
   mock.module("./captcha.js", () => ({
@@ -357,6 +373,74 @@ describe("proxyRequest — hybrid plan fallback", () => {
     expect(resp.status).toBe(429);
     // Nothing pinned: no cooldown, no effective-plan change.
     expect(activePlan(config)).toBe("coding-plan");
+  });
+
+  it("spends a held reset right on a coding-plan 429 and retries the SAME request", async () => {
+    // The 429 trigger: with a FIVE_HOUR right on hand the 429 is answered by
+    // re-opening the 5h window and resending to the SAME coding URL — the
+    // start-plan fallback never runs, no cooldown is written.
+    __setResetRightsForTests([Date.now() + 3600_000]);
+    const calls: RecordedCall[] = [];
+    const config: ProxyConfig = {
+      ...TEST_CONFIG,
+      plan: "coding-plan",
+      planAutoSwitch: true,
+      planPriority: ["coding-plan", "start-plan"],
+    };
+    let codingCalls = 0;
+    const fetchImpl = Object.assign(
+      (async (req: Request): Promise<Response> => {
+        calls.push({
+          url: req.url,
+          authorization: req.headers.get("authorization"),
+          apiKey: req.headers.get("x-api-key"),
+          body: await req.clone().text(),
+        });
+        if (req.url.includes("/api/v1/zcode-plan/")) {
+          return new Response(ANTHROPIC_OK, { status: 200, headers: { "content-type": "application/json" } });
+        }
+        codingCalls += 1;
+        if (codingCalls === 1) return new Response("rate limited", { status: 429 });
+        return new Response(ANTHROPIC_OK, { status: 200, headers: { "content-type": "application/json" } });
+      }) as typeof fetch,
+      { preconnect: () => {} },
+    ) as typeof fetch;
+    const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
+
+    // Two coding hits (rejected + retried on the reopened window), never start-plan.
+    expect(calls).toHaveLength(2);
+    expect(calls[0].url).toContain("https://api.z.ai/api/anthropic");
+    expect(calls[1].url).toContain("https://api.z.ai/api/anthropic");
+    expect(resp.status).toBe(200);
+    expect(activePlan(config)).toBe("coding-plan");
+  });
+
+  it("does not spend the reset right on a transient rate-limit 429", async () => {
+    __setResetRightsForTests([Date.now() + 3600_000]);
+    const calls: RecordedCall[] = [];
+    const config: ProxyConfig = {
+      ...TEST_CONFIG,
+      plan: "coding-plan",
+      planAutoSwitch: false, // isolate the reset seam: no fallback after the block
+      planPriority: ["coding-plan"],
+    };
+    const fetchImpl = Object.assign(
+      (async (req: Request): Promise<Response> => {
+        calls.push({
+          url: req.url,
+          authorization: req.headers.get("authorization"),
+          apiKey: req.headers.get("x-api-key"),
+          body: await req.clone().text(),
+        });
+        return new Response('{"code":1305,"msg":"platform load"}', { status: 429, headers: { "content-type": "application/json" } });
+      }) as typeof fetch,
+      { preconnect: () => {} },
+    ) as typeof fetch;
+    const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
+
+    // One coding hit only: the transient body blocked the spend (the right survives).
+    expect(calls).toHaveLength(1);
+    expect(resp.status).toBe(429);
   });
 
   it("does not fall back when the serving plan is last in priority", async () => {

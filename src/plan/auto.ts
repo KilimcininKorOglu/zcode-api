@@ -38,6 +38,7 @@ import {
   type QuotaCodingLimit,
   type StartPlanBalance,
 } from "../server/routes-quota.js";
+import { maybeUseResetOnTick } from "./reset.js";
 
 /** Re-exported for the handlers importing the plan seam from here. */
 export type { PlanTier };
@@ -332,6 +333,11 @@ export function startPlanAutoWatcher(config: ProxyConfig, deps: PlanAutoWatcherD
       );
       if (line) console.log(line);
       applyDecision(config, usable);
+      // Auto reset-right use: a held FIVE_HOUR right is spent here when the
+      // 5h window crosses the configured threshold or the right is about to
+      // expire (src/plan/reset.ts; the 429-side trigger lives in the handlers).
+      const tokensRow = coding !== null && coding.ok ? coding.limits.find((l) => l.type === "TOKENS_LIMIT") : undefined;
+      await maybeUseResetOnTick(config, (tokensRow ? pctUsedOf(tokensRow) : null) ?? null);
     },
   };
 

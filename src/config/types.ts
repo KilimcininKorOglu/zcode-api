@@ -227,6 +227,32 @@ export const DEFAULT_PLAN_SWITCH_RULES: { "coding-plan": PlanSwitchRule; "start-
   "start-plan": { limits: ["BALANCE"] },
 };
 
+/**
+ * Automatic consumption of the upstream 5h-window reset rights (the ZCode
+ * "🎁 N reset available" badges). The server grants rights on its own
+ * judgment; the proxy only READS them (`GET /api/v1/coding-plan/reset/status`)
+ * and spends them (`POST .../reset/use`) when one of the user-configured
+ * triggers holds. Default on.
+ */
+export interface PlanAutoResetConfig {
+  /** Master switch; off = rights are never read and never spent. Default true. */
+  enabled: boolean;
+  /** Spend a right when the 5h window's used share reaches this percent. Default 90. */
+  useThresholdPercent: number;
+  /** Spend a right when its remaining lifetime drops below this many seconds. Default 600. */
+  expireGraceSec: number;
+  /** Reset-status poll cadence in seconds (the official client polls every 300s). Default 300. */
+  statusPollIntervalSec: number;
+}
+
+/** Shipped defaults for {@link PlanAutoResetConfig}. */
+export const DEFAULT_PLAN_AUTO_RESET: PlanAutoResetConfig = {
+  enabled: true,
+  useThresholdPercent: 90,
+  expireGraceSec: 600,
+  statusPollIntervalSec: 300,
+};
+
 /** Top-level proxy configuration. */
 export interface ProxyConfig {
   server: {
@@ -256,12 +282,20 @@ export interface ProxyConfig {
   planAutoSwitch?: boolean;
   /**
    * Which signals make each plan "not enough" for the auto-switch watcher.
-   * Default: every known signal (coding-plan TIME_LIMIT + WEEK_LIMIT,
-   * start-plan BALANCE). `loadConfig` always sets this; fixtures may omit it.
+   * Default: every known signal (coding-plan TOKENS_LIMIT + TIME_LIMIT +
+   * WEEK_LIMIT, start-plan BALANCE). `loadConfig` always sets this; fixtures
+   * may omit it.
    */
   planSwitchRules?: { "coding-plan": PlanSwitchRule; "start-plan": PlanSwitchRule };
   /** Auto-switch poll interval in seconds (default 30; watcher restarts on change). */
   planPollIntervalSec?: number;
+  /**
+   * Automatic use of the upstream 5h-window reset rights. Default on with
+   * threshold 90% / grace 10min / status poll 5min; `loadConfig` always sets
+   * this; fixtures may omit it (accessors in src/plan/reset.ts fail open to
+   * the defaults).
+   */
+  planAutoReset?: PlanAutoResetConfig;
   /**
    * Send batch (non-streaming) client requests upstream as `stream: true` and
    * reassemble the SSE into the single JSON the client expects. The upstream

@@ -26,6 +26,11 @@ import {
   __setFallbackCooldownForTests,
   __setLastUsableForTests,
 } from "./auto.js";
+import {
+  __resetPlanResetStateForTests,
+  __setPlanResetDepsForTests,
+  __setResetRightsForTests,
+} from "./reset.js";
 import type { QuotaBalanceEntry } from "../server/routes-quota.js";
 import type { PlanTier, ProxyConfig } from "../config/types.js";
 
@@ -50,6 +55,7 @@ function balance(overrides: Partial<QuotaBalanceEntry> = {}): QuotaBalanceEntry 
 
 beforeEach(() => {
   __resetPlanAutoStateForTests();
+  __resetPlanResetStateForTests();
 });
 
 describe("hasUsableBalance", () => {
@@ -478,5 +484,65 @@ describe("sniffStartPlanRejection", () => {
 describe("fallback cooldown constant", () => {
   it("keeps the documented 10 minute cooldown", () => {
     expect(PLAN_FALLBACK_COOLDOWN_MS).toBe(600_000);
+  });
+});
+
+describe("watcher tick × planAutoReset", () => {
+  it("spends a held reset right when the 5h window crosses the threshold", async () => {
+    const resetUrls: string[] = [];
+    const resetFetch = ((async (input: RequestInfo | URL): Promise<Response> => {
+      const url = String(input);
+      resetUrls.push(url);
+      return new Response('{"code":0,"msg":"success"}');
+    })) as unknown as typeof fetch;
+    __setPlanResetDepsForTests({
+      fetchImpl: resetFetch,
+      loadCredentialImpl: async () => ({ apiKey: "k", jwt: "j", provider: "zai" }),
+    });
+    __setResetRightsForTests([Date.now() + 3600_000]);
+
+    const cfg = makeConfig({ planPriority: ["coding-plan", "start-plan"] });
+    const watcher = startPlanAutoWatcher(cfg, {
+      fetchImpl: fetchWithPlanes({
+        balances: [{ show_name: "w", remaining_units: 3, expires_at: Math.floor(Date.now() / 1000) + 3600 }],
+        coding: { limits: [{ type: "TOKENS_LIMIT", percentage: 95, remaining: 0 }] },
+      }),
+      loadCredentialImpl: loadLive,
+    });
+    try {
+      await watcher.tick();
+    } finally {
+      watcher.stop();
+    }
+    expect(resetUrls.some((u) => u.includes("/api/v1/coding-plan/reset/use"))).toBe(true);
+  });
+
+  it("leaves the right alone while the window is below the threshold", async () => {
+    const resetUrls: string[] = [];
+    const resetFetch = ((async (input: RequestInfo | URL): Promise<Response> => {
+      const url = String(input);
+      resetUrls.push(url);
+      return new Response('{"code":0,"msg":"success"}');
+    })) as unknown as typeof fetch;
+    __setPlanResetDepsForTests({
+      fetchImpl: resetFetch,
+      loadCredentialImpl: async () => ({ apiKey: "k", jwt: "j", provider: "zai" }),
+    });
+    __setResetRightsForTests([Date.now() + 3600_000]);
+
+    const cfg = makeConfig({ planPriority: ["coding-plan", "start-plan"] });
+    const watcher = startPlanAutoWatcher(cfg, {
+      fetchImpl: fetchWithPlanes({
+        balances: [{ show_name: "w", remaining_units: 3, expires_at: Math.floor(Date.now() / 1000) + 3600 }],
+        coding: { limits: [{ type: "TOKENS_LIMIT", percentage: 40, remaining: 600 }] },
+      }),
+      loadCredentialImpl: loadLive,
+    });
+    try {
+      await watcher.tick();
+    } finally {
+      watcher.stop();
+    }
+    expect(resetUrls).toEqual([]);
   });
 });

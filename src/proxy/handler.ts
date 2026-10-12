@@ -25,6 +25,7 @@ import { sendOrderedUpstreamRequest, orderedAdvertisedCodings } from "./ordered-
 import { transformRequestBody } from "./body-transformer.js";
 import { isCaptchaChallenged, retryOnCaptchaChallenge } from "./captcha-retry.js";
 import { activePlan, planPriorityOf, retryOnPlanExhausted, sniffStartPlanRejection, shouldFallbackPlan, type PlanTier } from "../plan/auto.js";
+import { maybeUsePlanResetAndRetry } from "../plan/reset.js";
 import { clientTraceFields, type ClientSessionResult } from "./client-session.js";
 import { resolveSessionContext } from "./session-context.js";
 import { randomBytes } from "node:crypto";
@@ -372,6 +373,29 @@ export async function proxyRequest(
   // with a JSON error envelope — that gateway exhausts a plan that way too
   // (observed live 2026-10-06: 200 + {"code":1005,"msg":"exceed quota
   // limit"}).
+  // Rebuild the upstream request for one plan tier, shared by the auto-reset
+  // retry and the plan fallback below (same body transform + header build).
+  const rebuildForPlan = async (target: PlanTier): Promise<Response> => {
+    transformedBody = transformRequestBody(upstreamBody, { format: upstreamFormat, metadataUserId, startPlan: target === "start-plan", provider: config.provider });
+    upstreamHeaderPairs = buildUpstreamHeaderPairs(clientReq, upstreamFormat, cred, config.identity, target, undefined, clientSession);
+    if (useOrderedTransport && translateMode) {
+      upstreamHeaderPairs = capOrderedAcceptEncoding(upstreamHeaderPairs);
+    }
+    upstreamReq = buildUpstreamRequest(clientReq, upstreamFormat, provider, cred, transformedBody, config.identity, target, undefined, clientSession);
+    return dispatch(upstreamReq, upstreamHeaderPairs);
+  };
+
+  // Auto reset-right use: a coding-plan 429 with a held FIVE_HOUR right spends
+  // it and retries the SAME request on the reopened window — independent of
+  // planAutoSwitch (spending a granted right is not a plan switch). A
+  // transient rate-limit body blocks the spend (that 429 is load, not
+  // exhaustion). On failure or no right, control flows to the fallback below.
+  if (plan === "coding-plan" && upstreamResp.status === 429) {
+    const rejectionBody = (await upstreamResp.clone().text().catch(() => null))?.slice(0, 65536) ?? null;
+    const reset = await maybeUsePlanResetAndRetry({ plan, config, rejectionBody, rebuildAndDispatch: rebuildForPlan });
+    if (reset.handled && reset.resp) upstreamResp = reset.resp;
+  }
+
   if (config.planAutoSwitch === true) {
     let planRejected = shouldFallbackPlan(upstreamResp.status, plan);
     if (!planRejected && plan === "start-plan" && upstreamResp.status === 200) {
@@ -388,15 +412,7 @@ export async function proxyRequest(
           console.log(`${reqId} ${message}`);
           appendErrorLog({ kind: "plan_fallback", reqId, message, ...clientTraceFields(clientReq) });
         },
-        rebuildAndDispatch: (target) => {
-          transformedBody = transformRequestBody(upstreamBody, { format: upstreamFormat, metadataUserId, startPlan: target === "start-plan", provider: config.provider });
-          upstreamHeaderPairs = buildUpstreamHeaderPairs(clientReq, upstreamFormat, cred, config.identity, target, undefined, clientSession);
-          if (useOrderedTransport && translateMode) {
-            upstreamHeaderPairs = capOrderedAcceptEncoding(upstreamHeaderPairs);
-          }
-          upstreamReq = buildUpstreamRequest(clientReq, upstreamFormat, provider, cred, transformedBody, config.identity, target, undefined, clientSession);
-          return dispatch(upstreamReq, upstreamHeaderPairs);
-        },
+        rebuildAndDispatch: rebuildForPlan,
       });
       if (outcome.handled && outcome.resp) {
         plan = outcome.target ?? plan;

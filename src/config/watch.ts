@@ -20,6 +20,7 @@
 import { watch } from "node:fs";
 import { basename, dirname } from "node:path";
 import { loadConfig } from "./loader.js";
+import { planAutoResetOf } from "../plan/reset.js";
 import type { ProxyConfig } from "./types.js";
 
 /** Fields bound once at startup — reported back as "restart to apply". */
@@ -34,6 +35,10 @@ export interface ConfigWatchHandles {
   planWatcherRunning(): boolean;
   startPlanWatcher(): void;
   stopPlanWatcher(): void;
+  /** Running-or-starting state of the planAutoReset status poller. */
+  resetPollerRunning(): boolean;
+  startPlanResetPoller(): void;
+  stopPlanResetPoller(): void;
   /** Warm the captcha pool when the config moves to start-plan (no-op once up). */
   warmCaptchaPool(): void;
 }
@@ -106,6 +111,7 @@ export function watchConfigFile(
 function reconcileJobs(handles: ConfigWatchHandles, config: ProxyConfig, changed: Set<string>): void {
   reconcileClaimJobs(handles, config, changed);
   reconcilePlanWatcherJobs(handles, config, changed);
+  reconcilePlanResetJobs(handles, config, changed);
 
   if (config.plan === "start-plan") handles.warmCaptchaPool();
 }
@@ -123,6 +129,18 @@ function reconcilePlanWatcherJobs(handles: ConfigWatchHandles, config: ProxyConf
     handles.planWatcherRunning(),
     handles.startPlanWatcher,
     handles.stopPlanWatcher,
+  );
+}
+
+function reconcilePlanResetJobs(handles: ConfigWatchHandles, config: ProxyConfig, changed: Set<string>): void {
+  // A dirty planAutoReset block (threshold/grace/poll-interval change) restarts
+  // the poller so the new cadence reaches the running timer (claim-block pattern).
+  reconcileToggleJob(
+    planAutoResetOf(config).enabled,
+    changed.has("planAutoReset"),
+    handles.resetPollerRunning(),
+    handles.startPlanResetPoller,
+    handles.stopPlanResetPoller,
   );
 }
 
