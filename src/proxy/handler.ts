@@ -158,6 +158,7 @@ export async function proxyRequest(
   // The hybrid plan auto-switch resolves ONCE per request: the background
   // watcher may flip the effective plan between requests, never mid-request.
   const isCountTokens = clientReq.url.includes("/count_tokens");
+  if (isCountTokens) meta.countTokens = true;
   let plan: PlanTier = isCountTokens && cred.apiKey ? "coding-plan" : activePlan(config);
   let startPlan = plan === "start-plan";
   meta.plan = plan;
@@ -1179,6 +1180,7 @@ function translatedSseResponse(body: ReadableStream<Uint8Array>): Response {
 export interface RequestMeta {
   model: string;
   stream: boolean;
+  countTokens?: boolean;
   /** Plan the request is served on, set by proxyRequest after resolution. */
   plan?: PlanTier;
   /** Client-supplied correlation ids (clientTraceFields), copied into error-log entries. */
@@ -1368,7 +1370,7 @@ export function printRow(
   if (status >= 400) recordRequestError(reqId, format, meta, status, started, headersAt, tokens, streamEndAt);
   printHeader();
   const tag = format === "anthropic" ? "ANT" : "OAI";
-  const mode = meta.stream ? "stream" : "batch";
+  const mode = meta.countTokens ? "count" : meta.stream ? "stream" : "batch";
 
   if (COMPACT_LOG) {
     const ttfbMs = headersAt - started;

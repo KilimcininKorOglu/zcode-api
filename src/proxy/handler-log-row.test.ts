@@ -73,5 +73,11 @@ describe("request log row token columns (Input, Cache, Output)", () => {
     const out = await captureRow({ model: "glm-5.3-flash", stream: true }, 0, 850, 900, 14480, 520);
     expect(out).toContain(`| ${"520".padStart(7)} | ${"14480".padStart(7)} | ${"2234".padStart(7)} |`);
   });
+
+  it("renders mode as count when meta.countTokens is true", async () => {
+    const out = await captureRow({ model: "glm-5.3-flash", stream: false, countTokens: true }, 0, 850, 0, 0, 6631);
+    expect(out).toContain("| count  |");
+    expect(out).toContain(`| ${"6631".padStart(7)} | ${"-".padStart(7)} |`);
+  });
 });
 
