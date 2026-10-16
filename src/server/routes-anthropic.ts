@@ -4,7 +4,7 @@
  */
 import { proxyRequest, type ProxyHandlerOptions } from "../proxy/handler.js";
 
-/** Handle POST /v1/messages — forward to upstream Anthropic endpoint. */
+/** Handle POST /v1/messages and POST /v1/messages/count_tokens — forward to upstream Anthropic endpoint. */
 export async function handleMessages(
   req: Request,
   opts: ProxyHandlerOptions,

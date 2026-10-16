@@ -157,7 +157,8 @@ export async function proxyRequest(
   // the start-plan JWT, so we do the same (no OpenAI translation either way).
   // The hybrid plan auto-switch resolves ONCE per request: the background
   // watcher may flip the effective plan between requests, never mid-request.
-  let plan: PlanTier = activePlan(config);
+  const isCountTokens = clientReq.url.includes("/count_tokens");
+  let plan: PlanTier = isCountTokens && cred.apiKey ? "coding-plan" : activePlan(config);
   let startPlan = plan === "start-plan";
   meta.plan = plan;
   const translateAnthropicToOpenAI = false;
@@ -185,7 +186,7 @@ export async function proxyRequest(
   // expects (see the `!meta.stream` SSE branch below). Injected into
   // `upstreamBody` so the plan-fallback and captcha rebuilds — which
   // re-transform from it — keep the flag.
-  if (config.batchAsStream !== false && !meta.stream && upstreamBody !== undefined) {
+  if (!isCountTokens && config.batchAsStream !== false && !meta.stream && upstreamBody !== undefined) {
     upstreamBody = withStreamEnabled(upstreamBody);
     if (debug) debugLine(reqId, "batch request sent upstream as stream");
   }
@@ -216,7 +217,7 @@ export async function proxyRequest(
   let highspeedAuth: HighspeedAuth | undefined = undefined;
   let highspeedOrigBody: string | undefined;
   let highspeedOrigPairs: UpstreamHeaderPair[] | undefined;
-  if (highspeedManager && !startPlan && highspeedManager.isEligibleModel(meta.model) && transformedBody) {
+  if (!isCountTokens && highspeedManager && !startPlan && highspeedManager.isEligibleModel(meta.model) && transformedBody) {
     const auth = highspeedAuthFrom(cred);
     if (auth) {
       highspeedAuth = auth;
@@ -625,6 +626,21 @@ export async function proxyRequest(
     const [clientBody, statsBody] = upstreamResp.body.tee();
     observeStream(reqId, format, meta, upstreamResp.status, started, statsBody, upstreamResp.headers.get("content-encoding"));
     return passthroughResponse(upstreamResp, clientReq.headers.get("accept-encoding"), clientBody);
+  }
+
+  if (isCountTokens && upstreamResp.ok) {
+    const text = await upstreamResp.text().catch(() => "");
+    let inputTokens = 0;
+    try {
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      if (typeof parsed.input_tokens === "number") inputTokens = parsed.input_tokens;
+    } catch {}
+    printRow(reqId, format, meta, upstreamResp.status, started, headersAt, inputTokens, 0, 0);
+    return new Response(text, {
+      status: upstreamResp.status,
+      statusText: upstreamResp.statusText,
+      headers: upstreamResp.headers,
+    });
   }
 
   printRow(reqId, format, meta, upstreamResp.status, started, headersAt, 0, 0, 0);

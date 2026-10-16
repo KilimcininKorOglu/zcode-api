@@ -102,6 +102,25 @@ describe("buildUpstreamURL", () => {
       "https://open.bigmodel.cn/api/anthropic/v1/messages",
     );
   });
+
+  it("builds count_tokens URL for Anthropic upstream when subpath is provided", () => {
+    expect(buildUpstreamURL("anthropic", ZAI_PROVIDER, "coding-plan", "/count_tokens")).toBe(
+      "https://api.z.ai/api/anthropic/v1/messages/count_tokens",
+    );
+    expect(buildUpstreamURL("anthropic", BIGMODEL_PROVIDER, "coding-plan", "/count_tokens")).toBe(
+      "https://open.bigmodel.cn/api/anthropic/v1/messages/count_tokens",
+    );
+  });
+
+  it("routes /v1/messages/count_tokens to count_tokens upstream with token-counting beta header", () => {
+    const req = new Request("http://localhost:8080/v1/messages/count_tokens", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+    });
+    const upstream = buildUpstreamRequest(req, "anthropic", ZAI_PROVIDER, ZAI_CRED, "{}", IDENTITY, "coding-plan");
+    expect(upstream.url).toBe("https://api.z.ai/api/anthropic/v1/messages/count_tokens");
+    expect(upstream.headers.get("anthropic-beta")).toContain("token-counting-2024-11-01");
+  });
 });
 
 describe("buildZcodeTraceHeaders", () => {

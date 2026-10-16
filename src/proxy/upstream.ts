@@ -77,17 +77,22 @@ const STRIP_HEADERS = new Set([
  * pass the format the upstream will receive, which may differ from the
  * client's inbound format when the proxy is in compatibility mode.
  */
-export function buildUpstreamURL(format: Format, provider: ProviderDef, plan: "coding-plan" | "start-plan" = "coding-plan"): string {
+export function buildUpstreamURL(
+  format: Format,
+  provider: ProviderDef,
+  plan: "coding-plan" | "start-plan" = "coding-plan",
+  subpath: string = "",
+): string {
   if (plan === "start-plan") {
     // Anthropic-messages gateway used by the live ZCode desktop client for
     // start-plan (incl. claimed trial plans like the weekend package).
     // The legacy OpenAI route `${STARTPLAN_ANTHROPIC_BASE}/chat/completions`
     // returns "404 page not found" since the server-side rollout of this
     // endpoint (observed 2026-08-28).
-    return `${STARTPLAN_ANTHROPIC_BASE}/anthropic/v1/messages`;
+    return `${STARTPLAN_ANTHROPIC_BASE}/anthropic/v1/messages${subpath}`;
   }
   if (format === "anthropic") {
-    return `${provider.anthropicBaseURL}/v1/messages`;
+    return `${provider.anthropicBaseURL}/v1/messages${subpath}`;
   }
   return `${provider.openaiBaseURL}/chat/completions`;
 }
@@ -209,10 +214,21 @@ export function buildUpstreamHeaderPairs(
   // "zstd decompress" client error), and nothing needs it — gzip/deflate/br
   // serve every caller, and server-side paths inflate via the coding net.
   const clientAcceptEncoding = stripZstdAcceptEncoding(clientReq.headers.get("accept-encoding") ?? "gzip");
+  const passthrough = collectPassthroughHeaders(clientReq);
+  if (clientReq.url.includes("/count_tokens")) {
+    const existing = passthrough["anthropic-beta"];
+    if (existing) {
+      if (!existing.includes("token-counting")) {
+        passthrough["anthropic-beta"] = `${existing},token-counting-2024-11-01`;
+      }
+    } else {
+      passthrough["anthropic-beta"] = "token-counting-2024-11-01";
+    }
+  }
   return [
     ["content-type", "application/json"],
     ["accept-encoding", clientAcceptEncoding],
-    ...Object.entries(collectPassthroughHeaders(clientReq)),
+    ...Object.entries(passthrough),
     ...Object.entries(buildAuthHeaders(format, cred, identity, plan, clientSession)),
     ...Object.entries(extraHeaders ?? {}),
   ];
@@ -240,7 +256,8 @@ export function buildUpstreamRequest(
   extraHeaders?: Record<string, string>,
   clientSession?: UpstreamClientSession,
 ): Request {
-  const url = buildUpstreamURL(format, provider, plan);
+  const subpath = clientReq.url.includes("/count_tokens") ? "/count_tokens" : "";
+  const url = buildUpstreamURL(format, provider, plan, subpath);
   const headerPairs = buildUpstreamHeaderPairs(clientReq, format, cred, identity, plan, extraHeaders, clientSession);
 
   const init: RequestInit = {

@@ -58,6 +58,14 @@ beforeAll(async () => {
       let parsed: { stream?: boolean; model?: string; messages?: Array<{ role?: string; content?: unknown }> } = {};
       try { parsed = JSON.parse(rawBody); } catch {}
 
+      if (url.pathname.includes("/v1/messages/count_tokens")) {
+        capturedUpstreamBodies.push(rawBody);
+        return new Response(JSON.stringify({ input_tokens: 42 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+
       if (url.pathname.includes("/v1/messages")) {
         capturedUpstreamBodies.push(rawBody);
         let hasToolResult = false;
@@ -354,6 +362,20 @@ describe("integration: Anthropic streaming usage", () => {
     const delta = JSON.parse(deltaLine!.slice(6));
     expect(delta.usage.output_tokens).toBe(4);
     expect(text).toContain("event: message_stop");
+  });
+
+  it("POST /v1/messages/count_tokens returns 200 with input_tokens", async () => {
+    const resp = await fetch(proxyUrl("/v1/messages/count_tokens"), {
+      method: "POST",
+      headers: authHeader(),
+      body: JSON.stringify({
+        model: "glm-4.6",
+        messages: [{ role: "user", content: "Count test" }],
+      }),
+    });
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { input_tokens: number };
+    expect(body.input_tokens).toBe(42);
   });
 });
 

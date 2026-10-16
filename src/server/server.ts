@@ -107,7 +107,7 @@ export function createFetchHandler(opts: ServerOptions): (req: Request) => Promi
       return handleQuota(config, opts.fetchImpl);
     }
 
-    if (path === "/v1/messages" && method === "POST") {
+    if ((path === "/v1/messages" || path === "/v1/messages/count_tokens") && method === "POST") {
       return handleMessages(req, proxyOpts);
     }
 
