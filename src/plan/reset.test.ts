@@ -6,14 +6,23 @@
 import { describe, it, expect, beforeEach } from "bun:test";
 import {
   cachedResetRights,
+  computeNextOpportunityCheckAt,
   fetchPlanResetStatus,
+  getNextOpportunityCheckAt,
   isTransient429,
+  maybeRequestPlanResetOpportunity,
   maybeUsePlanResetAndRetry,
   planAutoResetOf,
+  requestPlanResetOpportunity,
   shouldUseReset,
   startPlanResetPoller,
   usePlanReset,
+  OPPORTUNITY_ERROR_COOLDOWN_MS,
+  OPPORTUNITY_MIN_INTERVAL_MS,
+  OPPORTUNITY_SUCCESS_COOLDOWN_MS,
+  OPPORTUNITY_THROTTLE_COOLDOWN_MS,
   __resetPlanResetStateForTests,
+  __setNextOpportunityCheckAtForTests,
   __setPlanResetDepsForTests,
   __setResetRightsForTests,
 } from "./reset.js";
@@ -290,3 +299,146 @@ describe("startPlanResetPoller", () => {
     expect(planAutoResetOf(bare).statusPollIntervalSec).toBe(300);
   });
 });
+
+describe("requestPlanResetOpportunity", () => {
+  it("returns null without a stored JWT", async () => {
+    const { fetch } = mockFetch(() => new Response('{"code":0,"data":{"granted":true}}'));
+    const res = await requestPlanResetOpportunity(fetch, async () => cred(undefined));
+    expect(res).toBeNull();
+  });
+
+  it("parses granted: true from code 0 envelope", async () => {
+    const { fetch, calls } = mockFetch(() => new Response('{"code":0,"msg":"success","data":{"granted":true}}'));
+    const res = await requestPlanResetOpportunity(fetch, async () => cred("jwt-1"));
+    expect(res).toEqual({ granted: true, nextTryAt: null });
+    expect(calls[0].url).toBe("https://zcode.z.ai/api/v1/coding-plan/reset/opportunity");
+    expect(calls[0].method).toBe("POST");
+    const body = JSON.parse(calls[0].body ?? "{}") as { idempotency_key?: string };
+    expect(body.idempotency_key).toMatch(/^[0-9a-f-]{36}$/);
+    expect(calls[0].headers?.authorization).toBe("Bearer jwt-1");
+  });
+
+  it("parses code 3301 not-allowed with next_try_at timestamp", async () => {
+    const { fetch } = mockFetch(
+      () => new Response('{"code":3301,"msg":"coding plan reset grant not allowed","data":{"granted":false,"next_try_at":1792168771874}}'),
+    );
+    const res = await requestPlanResetOpportunity(fetch, async () => cred("jwt-1"));
+    expect(res).toEqual({ granted: false, nextTryAt: 1792168771874 });
+  });
+
+  it("handles HTTP 429 throttle with backoff nextTryAt", async () => {
+    const now = Date.now();
+    const { fetch } = mockFetch(() => new Response("Too Many Requests", { status: 429 }));
+    const res = await requestPlanResetOpportunity(fetch, async () => cred("jwt-1"));
+    expect(res?.granted).toBe(false);
+    expect(res?.nextTryAt).toBeGreaterThanOrEqual(now + OPPORTUNITY_THROTTLE_COOLDOWN_MS - 100);
+  });
+
+  it("retains idempotency key on network failure and reuses it", async () => {
+    let failOnce = true;
+    const { fetch, calls } = mockFetch(() => {
+      if (failOnce) {
+        failOnce = false;
+        throw new Error("network down");
+      }
+      return new Response('{"code":0,"data":{"granted":true}}');
+    });
+    const first = await requestPlanResetOpportunity(fetch, async () => cred("jwt-1"));
+    expect(first).toBeNull();
+    const second = await requestPlanResetOpportunity(fetch, async () => cred("jwt-1"));
+    expect(second?.granted).toBe(true);
+    expect(calls).toHaveLength(2);
+    const key1 = JSON.parse(calls[0].body ?? "{}").idempotency_key;
+    const key2 = JSON.parse(calls[1].body ?? "{}").idempotency_key;
+    expect(key1).toBe(key2);
+  });
+});
+
+describe("computeNextOpportunityCheckAt", () => {
+  const now = 1_000_000_000_000;
+
+  it("adds error cooldown when result is null", () => {
+    expect(computeNextOpportunityCheckAt(null, now)).toBe(now + OPPORTUNITY_ERROR_COOLDOWN_MS);
+  });
+
+  it("adds success cooldown when granted", () => {
+    expect(computeNextOpportunityCheckAt({ granted: true, nextTryAt: null }, now)).toBe(now + OPPORTUNITY_SUCCESS_COOLDOWN_MS);
+  });
+
+  it("respects next_try_at when beyond min interval", () => {
+    const future = now + 600_000;
+    expect(computeNextOpportunityCheckAt({ granted: false, nextTryAt: future }, now)).toBe(future);
+  });
+
+  it("enforces minimum interval if next_try_at is sooner", () => {
+    const sooner = now + 60_000;
+    expect(computeNextOpportunityCheckAt({ granted: false, nextTryAt: sooner }, now)).toBe(now + OPPORTUNITY_MIN_INTERVAL_MS);
+  });
+});
+
+describe("maybeRequestPlanResetOpportunity", () => {
+  it("skips network call when current time is before nextOpportunityCheckAt", async () => {
+    const now = 1_000_000_000_000;
+    __setNextOpportunityCheckAtForTests(now + 60_000);
+    let called = 0;
+    const { fetch } = mockFetch(() => {
+      called += 1;
+      return new Response('{"code":0,"data":{"granted":true}}');
+    });
+    const ok = await maybeRequestPlanResetOpportunity(fetch, async () => cred("jwt-1"), now);
+    expect(ok).toBe(false);
+    expect(called).toBe(0);
+  });
+
+  it("executes when due and updates nextOpportunityCheckAt", async () => {
+    const now = 1_000_000_000_000;
+    __setNextOpportunityCheckAtForTests(now - 1000);
+    const { fetch } = mockFetch(
+      () => new Response('{"code":3301,"data":{"granted":false,"next_try_at":' + (now + 700_000) + "}}"),
+    );
+    const ok = await maybeRequestPlanResetOpportunity(fetch, async () => cred("jwt-1"), now);
+    expect(ok).toBe(false);
+    expect(getNextOpportunityCheckAt()).toBe(now + 700_000);
+  });
+
+  it("collapses concurrent probes into single flight", async () => {
+    let calls = 0;
+    const { fetch } = mockFetch(() => {
+      calls += 1;
+      return new Response('{"code":0,"data":{"granted":true}}');
+    });
+    const [a, b] = await Promise.all([
+      maybeRequestPlanResetOpportunity(fetch, async () => cred("jwt-1")),
+      maybeRequestPlanResetOpportunity(fetch, async () => cred("jwt-1")),
+    ]);
+    expect(a).toBe(true);
+    expect(b).toBe(true);
+    expect(calls).toBe(1);
+  });
+});
+
+describe("poller opportunity integration", () => {
+  it("claims opportunity and updates rights on poller tick", async () => {
+    const { fetch, calls } = mockFetch((url) => {
+      if (url.includes("/opportunity")) {
+        return new Response('{"code":0,"msg":"success","data":{"granted":true}}');
+      }
+      return new Response(STATUS_OK);
+    });
+    const lines: string[] = [];
+    const origLog = console.log;
+    console.log = (...a: unknown[]) => lines.push(a.join(" "));
+    try {
+      const poller = startPlanResetPoller(makeConfig(), { fetchImpl: fetch, loadCredentialImpl: async () => cred("jwt-1") });
+      await poller.tick();
+      poller.stop();
+    } finally {
+      console.log = origLog;
+    }
+    expect(calls.some((c) => c.url.includes("/opportunity"))).toBe(true);
+    expect(calls.some((c) => c.url.includes("/status"))).toBe(true);
+    expect(lines.some((l) => l.includes("granted a new FIVE_HOUR reset opportunity"))).toBe(true);
+    expect(lines.some((l) => l.includes("1 FIVE_HOUR right(s) available"))).toBe(true);
+  });
+});
+

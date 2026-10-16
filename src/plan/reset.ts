@@ -6,11 +6,11 @@
  * The rights live on a separate plane from the usage windows the watcher
  * polls: `GET https://zcode.z.ai/api/v1/coding-plan/reset/status` reports
  * `available_five_hour_resets[{expire_at}]` (plus the week variant, unused
- * here). The server grants rights on its own judgment — the proxy never calls
- * `/opportunity` (an aggressive schedule draws a bare HTTP 429 throttle) — it
- * only reads what was granted and spends it (`POST .../reset/use`,
- * `reset_type: "FIVE_HOUR"`, idempotency-keyed) when one of the configured
- * triggers holds:
+ * here). The poller actively claims available opportunities via
+ * `POST https://zcode.z.ai/api/v1/coding-plan/reset/opportunity` on the official
+ * client's cadence (respecting server next_try_at cooldowns and 429 throttle
+ * backoff), and spends a held right (`POST .../reset/use`, reset_type:
+ * "FIVE_HOUR", idempotency-keyed) when one of the configured triggers holds:
  *
  *   - the 5h window's used share reaches `useThresholdPercent` (default 90),
  *   - a held right's remaining lifetime drops below `expireGraceSec`
@@ -34,6 +34,18 @@ import type { PlanTier } from "./auto.js";
 /** The reset plane lives on the ZCode gateway, not on the data-plane origin. */
 const RESET_ORIGIN = "https://zcode.z.ai";
 
+/** Cooldown applied after an opportunity is successfully granted (10 minutes, matching ZCode's oDt). */
+export const OPPORTUNITY_SUCCESS_COOLDOWN_MS = 10 * 60_000;
+
+/** Minimum spacing between opportunity requests when the server declines (5 minutes, matching ZCode's aDt). */
+export const OPPORTUNITY_MIN_INTERVAL_MS = 5 * 60_000;
+
+/** Backoff applied when the server returns HTTP 429 throttle (10 minutes, matching ZCode's cDt). */
+export const OPPORTUNITY_THROTTLE_COOLDOWN_MS = 10 * 60_000;
+
+/** Backoff applied on network/transport errors (5 minutes, matching ZCode's sDt). */
+export const OPPORTUNITY_ERROR_COOLDOWN_MS = 5 * 60_000;
+
 /** Config accessor: fail open to the shipped defaults (fixtures omit the block). */
 export function planAutoResetOf(config: ProxyConfig): PlanAutoResetConfig {
   return config.planAutoReset ?? DEFAULT_PLAN_AUTO_RESET;
@@ -50,7 +62,7 @@ function resetHeaders(cred: Credential | null): Record<string, string> | null {
   };
 }
 
-type Envelope = { code?: number; msg?: string; data?: unknown; success?: unknown };
+type Envelope = { code?: number; msg?: string; data?: unknown; success?: unknown; status?: number };
 
 /** JSON envelope for a reset-plane call; a non-JSON body keeps the HTTP status. */
 async function requestEnvelope(
@@ -64,9 +76,10 @@ async function requestEnvelope(
     const resp = await fetchImpl(url, { method, headers, ...(body !== undefined ? { body } : {}) });
     const text = await resp.text();
     try {
-      return JSON.parse(text) as Envelope;
+      const parsed = JSON.parse(text) as Envelope;
+      return { status: resp.status, ...parsed };
     } catch {
-      return { code: resp.status, msg: text.slice(0, 120) };
+      return { status: resp.status, code: resp.status, msg: text.slice(0, 120) };
     }
   } catch (e) {
     return { code: -1, msg: String(e).slice(0, 120) };
@@ -95,6 +108,123 @@ export async function fetchPlanResetStatus(
   return rows
     .map((r) => (r && typeof r === "object" ? (r as { expire_at?: unknown }).expire_at : undefined))
     .filter((v): v is number => typeof v === "number");
+}
+
+export interface ResetOpportunityResult {
+  granted: boolean;
+  nextTryAt: number | null;
+}
+
+let nextOpportunityCheckAt = 0;
+let pendingOpportunityKey: string | null = null;
+let opportunityInFlight: Promise<ResetOpportunityResult | null> | null = null;
+
+export function getNextOpportunityCheckAt(): number {
+  return nextOpportunityCheckAt;
+}
+
+/**
+ * Request an opportunity to receive a reset right from the server (POST .../reset/opportunity).
+ * Mirrors the official ZCode client's `requestCodingPlanResetOpportunity` RPC:
+ * - code 0, data.granted: true -> granted
+ * - code 3301, data.next_try_at -> not granted yet, try again after next_try_at
+ * - HTTP 429 / code 429 / 1303 -> throttled, back off
+ * - null on unreadable envelope or missing JWT
+ */
+export async function requestPlanResetOpportunity(
+  fetchImpl: typeof fetch = fetch,
+  loadCredentialImpl: typeof loadCredential = loadCredential,
+  idempotencyKey?: string,
+): Promise<ResetOpportunityResult | null> {
+  fetchImpl = testFetchImpl ?? fetchImpl;
+  loadCredentialImpl = testLoadCredentialImpl ?? loadCredentialImpl;
+  const cred = await loadCredentialImpl().catch(() => null);
+  const headers = resetHeaders(cred ?? null);
+  if (!headers) return null;
+
+  const key = idempotencyKey ?? pendingOpportunityKey ?? randomUUID();
+  const env = await requestEnvelope(
+    `${RESET_ORIGIN}/api/v1/coding-plan/reset/opportunity`,
+    "POST",
+    JSON.stringify({ idempotency_key: key }),
+    { ...headers, "content-type": "application/json" },
+    fetchImpl,
+  );
+
+  if (!env || env.code === -1) {
+    pendingOpportunityKey = key;
+    return null;
+  }
+
+  pendingOpportunityKey = null;
+
+  if (env.status === 429 || env.code === 429 || env.code === 1303) {
+    return { granted: false, nextTryAt: Date.now() + OPPORTUNITY_THROTTLE_COOLDOWN_MS };
+  }
+
+  if (env.code === 0) {
+    const data = (env.data ?? {}) as { granted?: unknown };
+    return { granted: data.granted === true, nextTryAt: null };
+  }
+
+  if (env.code === 3301) {
+    const data = (env.data ?? {}) as { granted?: unknown; next_try_at?: unknown };
+    const nextTryAt =
+      typeof data.next_try_at === "number" && Number.isFinite(data.next_try_at) && data.next_try_at > 0
+        ? data.next_try_at
+        : null;
+    return { granted: false, nextTryAt };
+  }
+
+  return null;
+}
+
+/** Compute the epoch (ms) when the next opportunity check should happen. */
+export function computeNextOpportunityCheckAt(
+  result: ResetOpportunityResult | null,
+  nowMs: number,
+): number {
+  if (!result) {
+    return nowMs + OPPORTUNITY_ERROR_COOLDOWN_MS;
+  }
+  if (result.granted) {
+    return nowMs + OPPORTUNITY_SUCCESS_COOLDOWN_MS;
+  }
+  if (result.nextTryAt !== null) {
+    return Math.max(result.nextTryAt, nowMs + OPPORTUNITY_MIN_INTERVAL_MS);
+  }
+  return nowMs + OPPORTUNITY_SUCCESS_COOLDOWN_MS;
+}
+
+/**
+ * Perform an opportunity probe if the current time is past nextOpportunityCheckAt.
+ * Single-flight: concurrent callers share the in-flight probe.
+ * Returns true if a new reset right was granted.
+ */
+export async function maybeRequestPlanResetOpportunity(
+  fetchImpl: typeof fetch = fetch,
+  loadCredentialImpl: typeof loadCredential = loadCredential,
+  nowMs: number = Date.now(),
+): Promise<boolean> {
+  fetchImpl = testFetchImpl ?? fetchImpl;
+  loadCredentialImpl = testLoadCredentialImpl ?? loadCredentialImpl;
+  if (nowMs < nextOpportunityCheckAt) return false;
+  if (opportunityInFlight) {
+    const res = await opportunityInFlight;
+    return res?.granted ?? false;
+  }
+
+  opportunityInFlight = requestPlanResetOpportunity(fetchImpl, loadCredentialImpl).finally(() => {
+    opportunityInFlight = null;
+  });
+
+  const res = await opportunityInFlight;
+  nextOpportunityCheckAt = computeNextOpportunityCheckAt(res, nowMs);
+  if (res?.granted) {
+    console.log("plan reset: upstream granted a new FIVE_HOUR reset opportunity");
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -262,6 +392,7 @@ export function startPlanResetPoller(config: ProxyConfig, deps: PlanResetPollerD
     },
     async tick(): Promise<void> {
       if (stopped) return;
+      await maybeRequestPlanResetOpportunity(deps.fetchImpl, deps.loadCredentialImpl);
       const rights = await fetchPlanResetStatus(deps.fetchImpl, deps.loadCredentialImpl);
       if (rights === null) return;
       const prev = cachedFiveHourResets;
@@ -291,8 +422,16 @@ export function startPlanResetPoller(config: ProxyConfig, deps: PlanResetPollerD
 export function __resetPlanResetStateForTests(): void {
   cachedFiveHourResets = [];
   useInFlight = null;
+  opportunityInFlight = null;
+  nextOpportunityCheckAt = 0;
+  pendingOpportunityKey = null;
   testFetchImpl = null;
   testLoadCredentialImpl = null;
+}
+
+/** Seed nextOpportunityCheckAt directly (tests only). */
+export function __setNextOpportunityCheckAtForTests(ms: number): void {
+  nextOpportunityCheckAt = ms;
 }
 
 /** Seed the rights cache directly (tests only). */
