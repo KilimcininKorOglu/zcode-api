@@ -72,7 +72,7 @@ export function transformRequestBody(body: string | undefined, ctx: TransformCon
     if (ctx.startPlan) {
       modified = applyStartPlanSystem(obj, ctx.provider) || modified;
     }
-    modified = applyAnthropicCacheControl(obj) || modified;
+    modified = applyAnthropicCacheControl(obj, ctx.startPlan === true) || modified;
     if (ctx.metadataUserId) {
       modified = applyAnthropicUserId(obj, ctx.metadataUserId) || modified;
     }
@@ -98,37 +98,54 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null;
 }
 
+function isCanonicalEphemeral(v: unknown): boolean {
+  if (typeof v !== "object" || v === null) return false;
+  const keys = Object.keys(v);
+  return keys.length === 1 && (v as Record<string, unknown>).type === "ephemeral";
+}
+
 /**
- * Anthropic: two-phase cache_control injection, mirroring the bundle's
- * `zsi` (clear) + `Fsi` (mark) pair:
- *   (1) strip `cache_control` from every content block of every NON-system
- *       message (string content carries no marker to clear);
- *   (2) mark the last content block of the LAST non-system message (existing
- *       location algorithm) with `{type: "ephemeral"}`; string content is
- *       converted to a block array first (kept from the previous behavior).
+ * Anthropic: multi-turn cache_control injection.
  *
- * Without the clear phase, client-supplied `cache_control` on earlier messages
- * would pass through alongside our marker → multiple cache breakpoints and
- * more cache writes than the real client produces. The top-level `system`
- * field is untouched. The bundle's skipCacheWrite variant (marks the
- * second-to-last message instead) is NOT implemented — this proxy always
- * writes cache.
- *
- * Output-stable: applying this to an already-canonical body yields the same
- * bytes (no duplicate markers, target block unchanged). Note the function
- * still reports `modified` in that case — the clear phase strips the target
- * block's own marker before phase 2 re-adds the identical one — so callers
- * re-serialize once more; harmless (byte-identical output), just not free.
+ * Anthropic requires explicit `cache_control` breakpoints to evaluate and
+ * hit cached prefixes. In multi-turn conversations:
+ *   - The last non-system message gets marked with canonical `{type:"ephemeral"}`
+ *     to write the cache for the NEXT turn.
+ *   - On coding-plan (!startPlan), the second-to-last non-system message retains
+ *     its breakpoint so the current turn achieves a prefix CACHE HIT against the
+ *     previous turn's cached state (within Anthropic's 4-breakpoint budget).
+ *   - On start-plan, the 3 official system blocks already take 3 breakpoints,
+ *     so only 1 message breakpoint is allocated.
+ *   - Stale markers on messages older than the second-to-last are stripped
+ *     to prevent accumulating beyond Anthropic's 4-breakpoint ceiling.
  */
-function applyAnthropicCacheControl(body: Record<string, unknown>): boolean {
+function applyAnthropicCacheControl(body: Record<string, unknown>, startPlan = false): boolean {
   const messages = body.messages;
   if (!Array.isArray(messages) || messages.length === 0) return false;
 
-  // Phase 1 (bundle `zsi`): clear stale markers on non-system messages.
+  const nonSystemIndices: number[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (typeof msg === "object" && msg !== null && msg.role !== "system") {
+      nonSystemIndices.push(i);
+    }
+  }
+  if (nonSystemIndices.length === 0) return false;
+
+  const lastIndex = nonSystemIndices[nonSystemIndices.length - 1]!;
+  // On coding-plan (!startPlan), retain or place a breakpoint on the second-to-last non-system
+  // message so multi-turn conversations achieve prefix cache hits (Anthropic 4-breakpoint budget).
+  // On start-plan, the 3 official system blocks already consume 3 breakpoints, leaving room for only 1.
+  const secondLastIndex = (!startPlan && nonSystemIndices.length >= 2)
+    ? nonSystemIndices[nonSystemIndices.length - 2]
+    : undefined;
+
   let cleaned = false;
-  for (const msg of messages) {
-    if (typeof msg !== "object" || msg === null) continue;
-    if (msg.role === "system") continue;
+  // Phase 1: clear stale markers on non-system messages older than the second-to-last
+  for (let i = 0; i < messages.length; i++) {
+    if (i === lastIndex || i === secondLastIndex) continue;
+    const msg = messages[i];
+    if (typeof msg !== "object" || msg === null || msg.role === "system") continue;
     if (!Array.isArray(msg.content)) continue;
     for (const block of msg.content) {
       if (typeof block === "object" && block !== null && "cache_control" in block) {
@@ -138,29 +155,40 @@ function applyAnthropicCacheControl(body: Record<string, unknown>): boolean {
     }
   }
 
-  // Phase 2 (bundle `Fsi`): mark the last non-system message's last block.
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (typeof msg !== "object" || msg === null) continue;
-    if (msg.role === "system") continue;
+  let marked = false;
 
-    if (typeof msg.content === "string") {
-      msg.content = [{ type: "text", text: msg.content, cache_control: { type: "ephemeral" } }];
-      return true;
-    }
-    if (Array.isArray(msg.content) && msg.content.length > 0) {
-      const lastBlock = msg.content[msg.content.length - 1];
-      if (typeof lastBlock === "object" && lastBlock !== null && !lastBlock.cache_control) {
+  // Phase 2: mark the last non-system message's last block with canonical ephemeral
+  const lastMsg = messages[lastIndex]!;
+  if (typeof lastMsg.content === "string") {
+    lastMsg.content = [{ type: "text", text: lastMsg.content, cache_control: { type: "ephemeral" } }];
+    marked = true;
+  } else if (Array.isArray(lastMsg.content) && lastMsg.content.length > 0) {
+    const lastBlock = lastMsg.content[lastMsg.content.length - 1];
+    if (typeof lastBlock === "object" && lastBlock !== null) {
+      if (!isCanonicalEphemeral(lastBlock.cache_control)) {
         lastBlock.cache_control = { type: "ephemeral" };
-        return true;
+        marked = true;
       }
-      // Already marked — only report modified if the clear phase stripped
-      // stray markers elsewhere (idempotency: avoid needless re-serialize).
-      return cleaned;
     }
-    return cleaned;
   }
-  return cleaned;
+
+  // Phase 3: on coding-plan, if the second-to-last non-system message already carries cache_control,
+  // ensure it is preserved and normalized to canonical ephemeral
+  if (secondLastIndex !== undefined) {
+    const secondLastMsg = messages[secondLastIndex]!;
+    if (Array.isArray(secondLastMsg.content) && secondLastMsg.content.length > 0) {
+      for (const block of secondLastMsg.content) {
+        if (typeof block === "object" && block !== null && "cache_control" in block) {
+          if (!isCanonicalEphemeral(block.cache_control)) {
+            block.cache_control = { type: "ephemeral" };
+            marked = true;
+          }
+        }
+      }
+    }
+  }
+
+  return marked || cleaned;
 }
 
 /**

@@ -448,6 +448,12 @@ describe("buildUpstreamRequest", () => {
     expect(upstream.headers.get("anthropic-beta")).toBe("prompt-caching-2024-07-31");
   });
 
+  it("injects prompt-caching-2024-07-31 into anthropic-beta when client omits it", () => {
+    const clientReq = makeClientReq("{}", {});
+    const upstream = buildUpstreamRequest(clientReq, "anthropic", ZAI_PROVIDER, ZAI_CRED, "{}", IDENTITY);
+    expect(upstream.headers.get("anthropic-beta")).toBe("prompt-caching-2024-07-31");
+  });
+
   it("strips client Authorization header (prevents credential leak)", () => {
     const clientReq = makeClientReq("{}", { authorization: "Bearer client-token" });
     const upstream = buildUpstreamRequest(clientReq, "anthropic", ZAI_PROVIDER, ZAI_CRED, "{}", IDENTITY);

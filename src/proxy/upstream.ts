@@ -215,6 +215,16 @@ export function buildUpstreamHeaderPairs(
   // serve every caller, and server-side paths inflate via the coding net.
   const clientAcceptEncoding = stripZstdAcceptEncoding(clientReq.headers.get("accept-encoding") ?? "gzip");
   const passthrough = collectPassthroughHeaders(clientReq);
+  if (format === "anthropic") {
+    const existing = passthrough["anthropic-beta"];
+    if (existing) {
+      if (!existing.includes("prompt-caching")) {
+        passthrough["anthropic-beta"] = `${existing},prompt-caching-2024-07-31`;
+      }
+    } else {
+      passthrough["anthropic-beta"] = "prompt-caching-2024-07-31";
+    }
+  }
   if (clientReq.url.includes("/count_tokens")) {
     const existing = passthrough["anthropic-beta"];
     if (existing) {

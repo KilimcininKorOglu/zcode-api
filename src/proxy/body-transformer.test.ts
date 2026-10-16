@@ -110,10 +110,11 @@ describe("transformRequestBody — cache_control (Anthropic)", () => {
     expect(parsed.messages[0].content[0].cache_control).toEqual({ type: "ephemeral" });
   });
 
-  it("strips client cache_control on earlier non-system messages, keeps only the last-message marker", () => {
+  it("strips stale cache_control on messages prior to the second-to-last non-system message", () => {
     const body = JSON.stringify({
       messages: [
-        { role: "user", content: [{ type: "text", text: "early", cache_control: { type: "ephemeral" } }] },
+        { role: "user", content: [{ type: "text", text: "oldest", cache_control: { type: "ephemeral" } }] },
+        { role: "user", content: [{ type: "text", text: "second-last", cache_control: { type: "ephemeral" } }] },
         { role: "assistant", content: [{ type: "text", text: "reply" }] },
       ],
     });
@@ -121,6 +122,21 @@ describe("transformRequestBody — cache_control (Anthropic)", () => {
     const parsed = JSON.parse(out as string);
     expect(parsed.messages[0].content[0].cache_control).toBeUndefined();
     expect(parsed.messages[1].content[0].cache_control).toEqual({ type: "ephemeral" });
+    expect(parsed.messages[2].content[0].cache_control).toEqual({ type: "ephemeral" });
+  });
+
+  it("on start-plan, keeps only the last message marker to preserve the 4-breakpoint budget with official system blocks", () => {
+    const body = JSON.stringify({
+      messages: [
+        { role: "user", content: [{ type: "text", text: "second-last", cache_control: { type: "ephemeral" } }] },
+        { role: "assistant", content: [{ type: "text", text: "reply" }] },
+      ],
+    });
+    const out = transformRequestBody(body, { format: "anthropic", startPlan: true });
+    const parsed = JSON.parse(out as string);
+    // On start-plan, official system blocks consume breakpoints, so earlier message markers are stripped
+    expect(parsed.messages[1].content[0].cache_control).toBeUndefined();
+    expect(parsed.messages[2].content[0].cache_control).toEqual({ type: "ephemeral" });
   });
 
   it("is idempotent: an already-marked body is returned without modification", () => {
