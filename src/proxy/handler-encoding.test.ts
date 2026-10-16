@@ -143,6 +143,61 @@ describe("proxyRequest — passthrough content-encoding safety net", () => {
     expect(resp.headers.get("content-encoding")).toBe("identity");
     expect(await resp.text()).toBe(ANTHROPIC_OK);
   });
+
+  it("observes tokens from a compressed SSE passthrough stream (e.g. gzip)", async () => {
+    const sse = [
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"glm-4.6","usage":{"output_tokens":1}}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":42}}\n\n',
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ].join("");
+    const wire = await compressTestBytes(new TextEncoder().encode(sse), "gzip");
+    const fetchImpl = Object.assign(
+      ((async () => new Response(wire as unknown as BodyInit, {
+        status: 200,
+        headers: { "content-type": "text/event-stream", "content-encoding": "gzip" },
+      })) as unknown as typeof fetch),
+      { preconnect: () => {} },
+    ) as typeof fetch;
+
+    const config: ProxyConfig = { ...TEST_CONFIG };
+    const resp = await proxyRequest(
+      makeClientReq({ "content-type": "application/json", "accept-encoding": "gzip" }, '{"model":"glm-4.6","stream":true,"messages":[{"role":"user","content":"hi"}]}'),
+      "anthropic",
+      { config, auth: makeAuth(), fetchImpl },
+    );
+    expect(resp.status).toBe(200);
+    expect(resp.headers.get("content-encoding")).toBe("gzip");
+    // Consume client stream so observeStream finishes
+    await resp.arrayBuffer();
+  });
+
+  it("observes tokens from a brotli compressed SSE passthrough stream", async () => {
+    const sse = [
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"glm-4.6","usage":{"output_tokens":1}}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":99}}\n\n',
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ].join("");
+    const wire = await compressTestBytes(new TextEncoder().encode(sse), "brotli");
+    const fetchImpl = Object.assign(
+      ((async () => new Response(wire as unknown as BodyInit, {
+        status: 200,
+        headers: { "content-type": "text/event-stream", "content-encoding": "br" },
+      })) as unknown as typeof fetch),
+      { preconnect: () => {} },
+    ) as typeof fetch;
+
+    const config: ProxyConfig = { ...TEST_CONFIG };
+    const resp = await proxyRequest(
+      makeClientReq({ "content-type": "application/json", "accept-encoding": "gzip, deflate, br" }, '{"model":"glm-4.6","stream":true,"messages":[{"role":"user","content":"hi"}]}'),
+      "anthropic",
+      { config, auth: makeAuth(), fetchImpl },
+    );
+    expect(resp.status).toBe(200);
+    expect(resp.headers.get("content-encoding")).toBe("br");
+    await resp.arrayBuffer();
+  });
 });
 
 describe("proxyRequest — compressed request bodies", () => {

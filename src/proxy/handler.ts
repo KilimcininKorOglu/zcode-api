@@ -1418,7 +1418,10 @@ function observeStream(
   body: ReadableStream<Uint8Array>,
   contentEncoding: string | null,
 ): void {
-  const compressed = contentEncoding !== null;
+  const codings = contentEncoding
+    ? contentEncoding.toLowerCase().split(",").map((c) => c.trim()).filter((c) => c !== "" && c !== "identity")
+    : [];
+  const compressed = codings.length > 0;
   const dumpOn = dumpEnabled();
   const sampleDecoder = new TextDecoder();
   const metrics = new StreamMetrics();
@@ -1439,7 +1442,10 @@ function observeStream(
   }
 
   (async () => {
-    const reader = body.getReader();
+    const inflated = compressed ? inflateStreamForCodings(body, codings) : null;
+    const streamToRead = inflated ?? body;
+    const canParseSse = !compressed || inflated !== null;
+    const reader = streamToRead.getReader();
     const decoder = new TextDecoder();
     try {
       while (true) {
@@ -1453,7 +1459,7 @@ function observeStream(
             firstBytesSample += sampleDecoder.decode(value.slice(0, 4096 - firstBytesSample.length), { stream: true });
           }
         }
-        if (!compressed) {
+        if (canParseSse && value) {
           sseBuffer += decoder.decode(value, { stream: true });
           const idx = sseBuffer.lastIndexOf("\n");
           if (idx >= 0) {
@@ -1462,7 +1468,7 @@ function observeStream(
           }
         }
       }
-      if (!compressed && sseBuffer) parseSse(sseBuffer, lastChunkAt);
+      if (canParseSse && sseBuffer) parseSse(sseBuffer, lastChunkAt);
     } catch {}
     const endAt = Date.now();
     const ttfbMs = (firstChunkAt > 0 ? firstChunkAt : endAt) - requestSentAt;

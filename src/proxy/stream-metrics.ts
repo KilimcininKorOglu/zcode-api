@@ -11,7 +11,7 @@ export class StreamMetrics {
   observe(value: unknown, now: number): void {
     if (!value || typeof value !== "object") return;
     const j = value as Record<string, any>;
-    const count = j.usage?.completion_tokens ?? j.usage?.output_tokens;
+    const count = j.usage?.completion_tokens ?? j.usage?.output_tokens ?? j.message?.usage?.output_tokens;
     if (typeof count === "number" && Number.isFinite(count) && count >= 0) {
       this.tokens = count;
     }
