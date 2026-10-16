@@ -224,6 +224,8 @@ export async function maybeRequestPlanResetOpportunity(
     console.log("plan reset: upstream granted a new FIVE_HOUR reset opportunity");
     return true;
   }
+  const nextIn = res?.nextTryAt ? ` (next check in ${fmtDuration(res.nextTryAt - nowMs)})` : "";
+  console.log(`plan reset: checked opportunity — no reset opportunity available${nextIn}`);
   return false;
 }
 
@@ -380,6 +382,7 @@ export interface PlanResetPollerDeps {
 export function startPlanResetPoller(config: ProxyConfig, deps: PlanResetPollerDeps = {}): PlanResetPoller {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let firstRun = true;
   const intervalMs = planAutoResetOf(config).statusPollIntervalSec * 1000;
 
   const poller: PlanResetPoller = {
@@ -398,12 +401,18 @@ export function startPlanResetPoller(config: ProxyConfig, deps: PlanResetPollerD
       const prev = cachedFiveHourResets;
       cachedFiveHourResets = rights;
       const changed = rights.length !== prev.length || rights[0] !== prev[0];
-      if (!changed) return;
       if (rights.length > 0) {
-        console.log(`plan reset: ${rights.length} FIVE_HOUR right(s) available (soonest expires in ${fmtDuration(Math.min(...rights) - Date.now())})`);
+        if (firstRun || changed) {
+          console.log(`plan reset: ${rights.length} FIVE_HOUR right(s) available (soonest expires in ${fmtDuration(Math.min(...rights) - Date.now())})`);
+        }
       } else {
-        console.log("plan reset: no FIVE_HOUR rights left");
+        if (prev.length > 0) {
+          console.log("plan reset: no FIVE_HOUR rights left");
+        } else if (firstRun) {
+          console.log("plan reset: checked status — 0 FIVE_HOUR rights available");
+        }
       }
+      firstRun = false;
     },
   };
 

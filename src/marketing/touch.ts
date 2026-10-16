@@ -136,6 +136,14 @@ export async function claimActiveMarketingTouches(
     }
   }
 
+  if (newlyClaimed.length === 0) {
+    if (deliveries.length > 0) {
+      console.log(`[marketing] checked promotional touches (${deliveries.length} active campaign(s), already claimed)`);
+    } else {
+      console.log("[marketing] checked promotional touches (no active gifts/promotions)");
+    }
+  }
+
   return newlyClaimed;
 }
 
