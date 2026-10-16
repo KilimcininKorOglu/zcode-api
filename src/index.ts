@@ -28,6 +28,7 @@ import { checkForUpdate } from "./update/check.js";
 import { formatDuration } from "./plan/auto.js";
 import { planAutoResetOf } from "./plan/reset.js";
 import { LogBuffer, createControlDispatcher, type ControlState } from "./control.js";
+import { shutdownAllHighspeed } from "./highspeed/manager.js";
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -592,6 +593,12 @@ async function serve(configPath: string | undefined, debug: boolean): Promise<vo
     configWatcher.stop();
     const cleared: string[] = [];
     jobs.stopForShutdown(cleared);
+    try {
+      shutdownAllHighspeed(); // heartbeats are unref'd but stopped explicitly on shutdown
+      cleared.push("highspeed");
+    } catch {
+      /* loop never ignited */
+    }
     if (cleared.length > 0) console.log(`shutdown: cleared ${cleared.join(" + ")} timers`);
     if (serverRef.current) {
       // Closes the listener and exits the process (`stop(true)`).

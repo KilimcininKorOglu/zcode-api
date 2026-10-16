@@ -2,24 +2,24 @@
  * HighSpeed card management — mirrors ZCode 3.15.1 `HighspeedCardService`
  * (host chunk-3JWYEFTD `wo`; transport `Ar` = createHighspeedHttpTransport).
  *
- * Official client semantics:
- * - On eligible message submissions, attempts `POST {origin}/api/v1/highspeed/draw`
- *   (1s budget); hitting a card grants a timed acceleration card (≈ 5min window),
- *   while misses / cooldowns are throttled by the server's `next_draw_at` (≈ 2min).
- * - Single card slot: no draws while holding a card; card is bound to task_id.
+ * Official client semantics (`_reverse/NOTEPAD.md` §C):
+ * - On eligible message submissions, attempts `POST {origin}/api/v1/highspeed/draw` (1s budget);
+ *   hitting a card grants a timed acceleration card (≈ 5min window).
+ * - Single card slot: no draws while holding a card; card is bound to task_id (official = session/task).
  * - Authentication (`Js` buildHighspeedCodingPlanAuthHeaders, same recipe as MCP relay):
  *   Authorization: Bearer <zcode JWT> + X-Bigmodel-Authorization: Bearer <coding-plan
  *   token> + Bigmodel-Target-Type.
  *
- * Proxy deviations (deliberate deviations, official client is "per-message draw, single-task card"):
- * - Draws are triggered by eligible incoming requests (lazy worker), not blocking each message.
- * - task_id reuses client-session affinity (`upstreamSessionId`); without a session,
- *   a random UUID is used for each draw.
- * - All eligible requests in the card window share the active card (official client
- *   limits it to the task; the inference path only carries X-Highspeed-Card-ID without
- *   server-side task validation).
- * - 503 / biz 3404 (account not whitelisted) is negatively cached for 10 minutes to avoid
- *   cascading request latency.
+ * Proxy deviations (deliberate deviations, official client is "per-message inline draw, miss respects next_draw_at"):
+ * - Draws run as a background max-rate loop: the first eligible request synchronously ignites
+ *   the loop (immediate first draw), after which it continuously retries on a heartbeat cadence
+ *   (≈1s, matching measured server token-bucket refill 1/s); misses (card=null) ignore
+ *   server next_draw_at and retry on the next heartbeat.
+ * - Idle self-extinguish: stops drawing 5 minutes after the last eligible request; re-ignited by new requests.
+ * - task_id reuses client-session affinity (`upstreamSessionId`); random UUID when absent;
+ *   eligible requests within card window share the active card.
+ * - 503 / biz 3404 (account not whitelisted) is negatively cached for 10 minutes; 429 backs off 30s;
+ *   transport failure backs off 60s. Heartbeat timer is unref'd so it never keeps process alive.
  */
 import { randomUUID } from "node:crypto";
 import type { UpstreamHeaderPair } from "../proxy/upstream.js";
@@ -28,12 +28,14 @@ import { credentialString } from "../auth/types.js";
 
 const DRAW_PATH = "/api/v1/highspeed/draw";
 const DRAW_TIMEOUT_MS = 5_000;
+/** Heartbeat cadence of the draw loop ≈ measured token-bucket refill (1/s). */
+const DRAW_RETRY_MS = 1_000;
+/** Stop drawing this long after the last eligible request (idle self-extinguish). */
+const IDLE_MS = 5 * 60_000;
 /** Negative cache after account-level unavailability (503 / biz 3404). */
 const UNAVAILABLE_MS = 10 * 60_000;
 /** Backoff after an HTTP 429 (measured token bucket ≈ capacity 8, refill 1/s). */
 const RATE_LIMIT_BACKOFF_MS = 30_000;
-/** Fallback cooldown when the server does not send next_draw_at. */
-const DEFAULT_COOLDOWN_MS = 2 * 60_000;
 /** Cooldown after transport failure (network / timeout). */
 const TRANSPORT_FAILURE_MS = 60_000;
 /** Skip applying a card with less than this left on its window. */
@@ -59,7 +61,7 @@ export interface HighspeedAuth {
 interface DrawResponseBody {
   code?: unknown;
   msg?: unknown;
-  data?: { card?: DrawCardWire | null; next_draw_at?: unknown };
+  data?: { card?: DrawCardWire | null };
 }
 
 interface DrawCardWire {
@@ -71,31 +73,54 @@ interface DrawCardWire {
   expires_at?: unknown;
 }
 
+interface LatestDrawRequest {
+  model: string;
+  taskId: string;
+  auth: HighspeedAuth;
+}
+
 export class HighspeedManager {
   private readonly origin: string;
   private readonly models: string[];
+  private readonly deviceMid: string | undefined;
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
+  /** Heartbeat interval — production default 1s; tests inject small values. */
+  private readonly retryMs: number;
   private readonly notedKeys = new Set<string>();
   onEvent?: (message: string) => void;
 
   private card: HighspeedCard | null = null;
-  private nextDrawAt = 0;
   private unavailableUntil = 0;
-  private drawInFlight: { model: string; taskId: string; auth: HighspeedAuth; promise: Promise<void> } | null = null;
+  /** Earliest next draw attempt (429 / transport backoff gate). */
+  private nextAttemptAt = 0;
+  /** Loop deadline = last eligible request + IDLE_MS. */
+  private loopUntil = 0;
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private drawInFlight: Promise<void> | null = null;
+  /** Most recent eligible request — the loop always draws with these params. */
+  private latest: LatestDrawRequest | null = null;
 
   constructor(opts: {
     origin: string;
     models: string[];
+    /** Injected as X-Device-Mid (claim-plane convention) — required on first
+     *  draw access once the activity opens (live 2026-10-12: without it every
+     *  draw gets 400 biz 3001 "parameter error"). */
+    deviceMid?: string;
     fetchImpl?: typeof fetch;
     now?: () => number;
+    retryMs?: number;
     onEvent?: (message: string) => void;
   }) {
     this.origin = opts.origin.replace(/\/+$/u, "");
     this.models = opts.models.map((m) => m.trim().toLowerCase()).filter(Boolean);
+    this.deviceMid = opts.deviceMid?.trim() || undefined;
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.now = opts.now ?? Date.now;
+    this.retryMs = opts.retryMs ?? DRAW_RETRY_MS;
     this.onEvent = opts.onEvent;
+    liveManagers.add(this);
   }
 
   /** Prefix match against the configured eligible families (glm-5.3/5.2/5.1 …). */
@@ -107,31 +132,18 @@ export class HighspeedManager {
 
   /**
    * Fire-and-forget draw trigger — call on every eligible coding-plan request.
-   * Respects the single card slot, server cooldown and the unavailability
-   * window; concurrent calls deduplicate into one in-flight draw.
+   * Stamps the idle window with the latest request params and (re)ignites the
+   * background loop. While a card is held nothing is drawn (single slot);
+   * concurrent draws deduplicate into one in-flight request.
    */
   onRequest(model: string, sessionTaskId: string | undefined, auth: HighspeedAuth): void {
     if (!this.isEligibleModel(model)) return;
     const now = this.now();
     this.expireCard(now);
     if (this.card) return;
-    if (now < this.nextDrawAt || now < this.unavailableUntil) return;
-    if (this.drawInFlight) return;
-    if (!auth.jwt.trim()) {
-      this.noteOnce("no-jwt", "credential has no zcode JWT — highspeed disabled until re-login");
-      return;
-    }
-    const taskId = sessionTaskId ?? randomUUID();
-    const promise = this.draw(model, taskId, auth)
-      .catch(() => {
-        // draw() never throws (all outcomes map to cooldown windows); network
-        // throws land here as an extra guard.
-        this.nextDrawAt = this.now() + TRANSPORT_FAILURE_MS;
-      })
-      .finally(() => {
-        if (this.drawInFlight?.promise === promise) this.drawInFlight = null;
-      });
-    this.drawInFlight = { model, taskId, auth, promise };
+    this.latest = { model, taskId: sessionTaskId ?? randomUUID(), auth };
+    this.loopUntil = now + IDLE_MS;
+    this.ensureLoop();
   }
 
   /** The active card, or null when outside the window (expiry-checked). */
@@ -147,12 +159,91 @@ export class HighspeedManager {
     if (!this.card) return;
     this.card = null;
     this.onEvent?.(`highspeed: card dropped (${reason})`);
+    // Mid-idle-window restart: while the session is still active a replacement
+    // card is redrawn immediately (first draw fires synchronously).
+    if (this.now() < this.loopUntil) this.ensureLoop();
+  }
+
+  /** Stop the draw loop (shutdown / manager recreation). Idempotent, no-throw. */
+  stop(): void {
+    this.stopTimer();
   }
 
   private expireCard(now: number): void {
     if (this.card && this.card.expiresAt <= now) {
       this.onEvent?.(`highspeed: card ${this.card.cardId} expired`);
       this.card = null;
+    }
+  }
+
+  /** Ignite the loop if it is not running. First draw fires synchronously. */
+  private ensureLoop(): void {
+    if (this.timer) return;
+    const latest = this.latest;
+    if (!latest) return;
+    if (!latest.auth.jwt.trim()) {
+      this.noteOnce("no-jwt", "credential has no zcode JWT — highspeed disabled until re-login");
+      return;
+    }
+    if (this.drawInFlight) {
+      // In-flight draw with a stopped timer (idle-stop raced a request):
+      // re-arm the heartbeat; tick() applies the gates.
+      this.arm();
+      return;
+    }
+    void this.tick();
+  }
+
+  /** One loop beat: gate checks, maybe draw, re-arm. */
+  private tick(): void {
+    const now = this.now();
+    this.expireCard(now);
+    if (this.card) {
+      this.stopTimer();
+      return;
+    }
+    if (now >= this.loopUntil) {
+      this.stopTimer();
+      this.onEvent?.("highspeed: draw loop idle-stopped (5min without eligible requests)");
+      return;
+    }
+    if (this.drawInFlight || now < this.nextAttemptAt || now < this.unavailableUntil) {
+      this.arm();
+      return;
+    }
+    const latest = this.latest;
+    if (!latest || !latest.auth.jwt.trim()) {
+      this.stopTimer();
+      return;
+    }
+    const promise = this.draw(latest.model, latest.taskId, latest.auth)
+      .catch(() => {
+        // draw() never throws (all outcomes map to backoff windows); network
+        // throws land here as an extra guard.
+        this.nextAttemptAt = this.now() + TRANSPORT_FAILURE_MS;
+      })
+      .finally(() => {
+        if (this.drawInFlight === promise) this.drawInFlight = null;
+      });
+    this.drawInFlight = promise;
+    this.arm();
+  }
+
+  /** Re-arm the heartbeat. unref'd: the loop never keeps the process alive. */
+  private arm(): void {
+    this.stopTimer();
+    const timer = setTimeout(() => {
+      this.timer = null;
+      this.tick();
+    }, this.retryMs);
+    timer.unref?.();
+    this.timer = timer;
+  }
+
+  private stopTimer(): void {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
     }
   }
 
@@ -170,6 +261,7 @@ export class HighspeedManager {
           "X-Bigmodel-Authorization": `Bearer ${auth.codingPlanAuth}`,
           "Bigmodel-Target-Type": "PERSONAL",
           "x-request-id": randomUUID(),
+          ...(this.deviceMid ? { "X-Device-Mid": this.deviceMid } : {}),
         },
         body: JSON.stringify({
           task_id: taskId,
@@ -186,7 +278,7 @@ export class HighspeedManager {
         body = null;
       }
     } catch {
-      this.nextDrawAt = this.now() + TRANSPORT_FAILURE_MS;
+      this.nextAttemptAt = this.now() + TRANSPORT_FAILURE_MS;
       this.noteOnce("transport", "highspeed draw failed (network/timeout) — retrying later");
       return;
     } finally {
@@ -195,7 +287,7 @@ export class HighspeedManager {
 
     const now = this.now();
     if (status === 429) {
-      this.nextDrawAt = now + RATE_LIMIT_BACKOFF_MS;
+      this.nextAttemptAt = now + RATE_LIMIT_BACKOFF_MS;
       this.noteOnce("429", "highspeed draw rate-limited (429) — backing off 30s");
       return;
     }
@@ -212,11 +304,9 @@ export class HighspeedManager {
       this.noteOnce(`biz${code}`, `highspeed draw rejected (code=${code} ${String(body.msg ?? "").slice(0, 60)}) — negative-cached 10min`);
       return;
     }
-    const data = body.data ?? {};
-    this.nextDrawAt = typeof data.next_draw_at === "number" && data.next_draw_at > now
-      ? data.next_draw_at
-      : now + DEFAULT_COOLDOWN_MS;
-    const wire = data.card;
+    // Deliberate deviation: `next_draw_at` is ignored on a miss — the loop
+    // retries at the heartbeat cadence until the idle window closes.
+    const wire = body.data?.card;
     if (wire && typeof wire.card_id === "string" && wire.card_id
       && typeof wire.model === "string" && wire.model
       && typeof wire.expires_at === "number" && wire.expires_at > now) {
@@ -227,9 +317,10 @@ export class HighspeedManager {
         issuedAt: typeof wire.issued_at === "number" ? wire.issued_at : now,
         expiresAt: wire.expires_at,
       };
+      this.stopTimer();
       this.onEvent?.(`highspeed: card drawn (${this.card.cardId.slice(0, 12)}… model=${this.card.model} window=${Math.round((this.card.expiresAt - now) / 1000)}s)`);
     } else {
-      this.noteOnce("miss", "highspeed draw miss (card=null) — honoring next_draw_at cooldown");
+      this.noteOnce("miss", "highspeed draw miss (card=null) — retrying at max rate");
     }
   }
 
@@ -238,6 +329,44 @@ export class HighspeedManager {
     this.notedKeys.add(key);
     this.onEvent?.(`highspeed: ${message}`);
   }
+}
+
+/** Every constructed manager — shutdown hygiene for the background loops. */
+const liveManagers = new Set<HighspeedManager>();
+
+/** Stop every draw loop (serve-mode shutdown path, alongside claim/captcha). */
+export function shutdownAllHighspeed(): void {
+  for (const manager of liveManagers) manager.stop();
+  liveManagers.clear();
+}
+
+let defaultManager: HighspeedManager | null = null;
+let defaultManagerKey = "";
+
+/**
+ * Process-wide manager (single card slot, like the official host service).
+ * Returns null when `highspeed.enabled` is false. Recreated when origin/models
+ * change (Android `setConfig`) — the previous instance's loop is stopped.
+ */
+export function getDefaultHighspeedManager(config: {
+  highspeed: { enabled: boolean; origin: string; models: string[] };
+  identity: { deviceMid?: string };
+}): HighspeedManager | null {
+  if (!config.highspeed.enabled) return null;
+  const key = `${config.highspeed.origin}\n${config.highspeed.models.join(",")}\n${config.identity.deviceMid}`;
+  if (!defaultManager || key !== defaultManagerKey) {
+    defaultManager?.stop();
+    defaultManager = new HighspeedManager({
+      origin: config.highspeed.origin,
+      models: config.highspeed.models,
+      deviceMid: config.identity.deviceMid,
+      // State transitions (drawn / miss / cooldown / dropped / idle-stopped) are
+      // otherwise silent in production — surface each once per kind.
+      onEvent: (message) => console.log(`client-${message}`),
+    });
+    defaultManagerKey = key;
+  }
+  return defaultManager;
 }
 
 /** Rewrite the `model` field of a JSON request body (parse failure → unchanged). */
@@ -303,30 +432,4 @@ export function highspeedAuthFrom(cred: Credential): HighspeedAuth | null {
     codingPlanAuth: credentialString(cred),
     family: cred.provider === "bigmodel" ? "bigmodel" : "zai",
   };
-}
-
-let defaultManager: HighspeedManager | null = null;
-let defaultManagerKey = "";
-
-/**
- * Process-wide manager (single card slot, like the official host service).
- * Returns null when `highspeed.enabled` is false. Recreated when origin/models
- * change (Android `setConfig`).
- */
-export function getDefaultHighspeedManager(config: {
-  highspeed: { enabled: boolean; origin: string; models: string[] };
-}): HighspeedManager | null {
-  if (!config.highspeed.enabled) return null;
-  const key = `${config.highspeed.origin}\n${config.highspeed.models.join(",")}`;
-  if (!defaultManager || key !== defaultManagerKey) {
-    defaultManager = new HighspeedManager({
-      origin: config.highspeed.origin,
-      models: config.highspeed.models,
-      // State transitions (drawn / miss / cooldown / dropped) are otherwise
-      // silent in production — surface each once per kind.
-      onEvent: (message) => console.log(`client-${message}`),
-    });
-    defaultManagerKey = key;
-  }
-  return defaultManager;
 }
