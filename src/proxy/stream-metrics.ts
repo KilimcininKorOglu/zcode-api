@@ -5,6 +5,7 @@
  */
 export class StreamMetrics {
   tokens = 0;
+  inputTokens = 0;
   cachedTokens = 0;
   firstOutputAt: number | undefined;
   lastOutputAt: number | undefined;
@@ -21,6 +22,15 @@ export class StreamMetrics {
       ?? j.usage?.prompt_tokens_details?.cached_tokens;
     if (typeof cacheCount === "number" && Number.isFinite(cacheCount) && cacheCount >= 0) {
       this.cachedTokens = cacheCount;
+    }
+    const inCount = j.usage?.input_tokens ?? j.message?.usage?.input_tokens;
+    if (typeof inCount === "number" && Number.isFinite(inCount) && inCount >= 0) {
+      this.inputTokens = inCount;
+    } else {
+      const promptCount = j.usage?.prompt_tokens;
+      if (typeof promptCount === "number" && Number.isFinite(promptCount) && promptCount >= 0) {
+        this.inputTokens = Math.max(0, promptCount - this.cachedTokens);
+      }
     }
     const nonempty = (v: unknown) => typeof v === "string" && v.length > 0;
     const delta = j.choices?.[0]?.delta;

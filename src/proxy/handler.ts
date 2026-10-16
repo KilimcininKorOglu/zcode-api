@@ -635,7 +635,7 @@ export async function proxyRequest(
       const parsed = JSON.parse(text) as Record<string, unknown>;
       if (typeof parsed.input_tokens === "number") inputTokens = parsed.input_tokens;
     } catch {}
-    printRow(reqId, format, meta, upstreamResp.status, started, headersAt, inputTokens, 0, 0);
+    printRow(reqId, format, meta, upstreamResp.status, started, headersAt, 0, 0, 0, 0, inputTokens);
     return new Response(text, {
       status: upstreamResp.status,
       statusText: upstreamResp.statusText,
@@ -1052,6 +1052,7 @@ function batchJsonResponse(
   started: number,
   headersAt: number,
   cachedTokens = 0,
+  inputTokens = 0,
 ): Response {
   const payload = new TextEncoder().encode(json);
   const respHeaders = new Headers();
@@ -1062,10 +1063,10 @@ function batchJsonResponse(
   }
   if (clientAcceptsGzip(clientReq)) {
     respHeaders.set("content-encoding", "gzip");
-    printRow(reqId, format, meta, upstream.status, started, headersAt, outputTokens, 0, 0, cachedTokens);
+    printRow(reqId, format, meta, upstream.status, started, headersAt, outputTokens, 0, 0, cachedTokens, inputTokens);
     return new Response(gzipSync(payload), { status: upstream.status, headers: respHeaders });
   }
-  printRow(reqId, format, meta, upstream.status, started, headersAt, outputTokens, 0, 0, cachedTokens);
+  printRow(reqId, format, meta, upstream.status, started, headersAt, outputTokens, 0, 0, cachedTokens, inputTokens);
   return new Response(payload, { status: upstream.status, headers: respHeaders });
 }
 
@@ -1102,7 +1103,8 @@ async function translatedBatchResponse(
   }
   const openaiResp = translateResponseAnthropicToOpenAI(parsedAnthropic, model);
   const cachedTokens = openaiResp.usage?.prompt_tokens_details?.cached_tokens ?? parsedAnthropic.usage?.cache_read_input_tokens ?? 0;
-  return batchJsonResponse(upstream, clientReq, JSON.stringify(openaiResp), openaiResp.usage?.completion_tokens ?? 0, reqId, format, meta, started, headersAt, cachedTokens);
+  const inputTokens = parsedAnthropic.usage?.input_tokens ?? Math.max(0, (openaiResp.usage?.prompt_tokens ?? 0) - cachedTokens);
+  return batchJsonResponse(upstream, clientReq, JSON.stringify(openaiResp), openaiResp.usage?.completion_tokens ?? 0, reqId, format, meta, started, headersAt, cachedTokens, inputTokens);
 }
 
 async function translatedOpenAIToAnthropicBatchResponse(
@@ -1124,7 +1126,8 @@ async function translatedOpenAIToAnthropicBatchResponse(
   }
   const anthropicResp = translateResponseOpenAIToAnthropic(parsedOpenAI);
   const cachedTokens = parsedOpenAI.usage?.prompt_tokens_details?.cached_tokens ?? 0;
-  return batchJsonResponse(upstream, clientReq, JSON.stringify(anthropicResp), anthropicResp.usage.output_tokens, reqId, format, meta, started, headersAt, cachedTokens);
+  const inputTokens = anthropicResp.usage.input_tokens;
+  return batchJsonResponse(upstream, clientReq, JSON.stringify(anthropicResp), anthropicResp.usage.output_tokens, reqId, format, meta, started, headersAt, cachedTokens, inputTokens);
 }
 
 function translateAnthropicBody(body: string | undefined): Response | string | undefined {
@@ -1251,7 +1254,8 @@ async function collectedBatchResponse(
     return errorResponse(502, "upstream_stream_failed", (err as Error).message);
   }
   const cachedTokens = message.usage?.cache_read_input_tokens ?? 0;
-  return batchJsonResponse(upstream, clientReq, JSON.stringify(message), message.usage?.output_tokens ?? 0, reqId, format, meta, started, headersAt, cachedTokens);
+  const inputTokens = message.usage?.input_tokens ?? 0;
+  return batchJsonResponse(upstream, clientReq, JSON.stringify(message), message.usage?.output_tokens ?? 0, reqId, format, meta, started, headersAt, cachedTokens, inputTokens);
 }
 
 let reqCounter = 0;
@@ -1341,10 +1345,10 @@ function printHeader(): void {
   // First column matches REQ_ID_WIDTH (a boot-scoped id like `741f-#001`),
   // the Model column the longest known model name (`glm-5.3-flash`, 13).
   console.log(
-    "| #         | Time       | Fmt | Plan        | Model         | Mode   | Stat |    TTFB |   Cache |   Tok |  tok/s |   Total |",
+    "| #         | Time       | Fmt | Plan        | Model         | Mode   | Stat |    TTFB |   Input |   Cache |  Output |  tok/s |   Total |",
   );
   console.log(
-    "|-----------|------------|-----|-------------|---------------|--------|------|---------|---------|-------|--------|---------|",
+    "|-----------|------------|-----|-------------|---------------|--------|------|---------|---------|---------|---------|--------|---------|",
   );
 }
 
@@ -1359,6 +1363,7 @@ export function printRow(
   avgTps: number,
   streamEndAt: number,
   cachedTokens = 0,
+  inputTokens = 0,
 ): void {
   if (status >= 400) recordRequestError(reqId, format, meta, status, started, headersAt, tokens, streamEndAt);
   printHeader();
@@ -1369,8 +1374,9 @@ export function printRow(
     const ttfbMs = headersAt - started;
     const totalMs = streamEndAt > started ? streamEndAt - started : ttfbMs;
     const ttfbStr = fmtMs(ttfbMs);
-    const tokStr = tokens > 0 ? `${tokens}tok` : "";
+    const inStr = inputTokens > 0 ? `${inputTokens}in` : "";
     const cacheStr = cachedTokens > 0 ? `${cachedTokens}cache` : "";
+    const outStr = tokens > 0 ? `${tokens}out` : "";
     const tpsStr = avgTps > 0 ? `${avgTps.toFixed(0)}t/s` : "";
     const parts = [reqId, tag, meta.model, String(status), mode];
     if (meta.stream && streamEndAt > started) {
@@ -1378,8 +1384,9 @@ export function printRow(
     } else {
       parts.push(ttfbStr);
     }
+    if (inStr) parts.push(inStr);
     if (cacheStr) parts.push(cacheStr);
-    if (tokStr) parts.push(tokStr);
+    if (outStr) parts.push(outStr);
     if (tpsStr) parts.push(tpsStr);
     console.log(parts.join(" "));
     return;
@@ -1390,11 +1397,12 @@ export function printRow(
   // 1s, seconds below 1m, `NmNs` above — a 60s stream must not read "60054ms".
   const ttfb = fmtMs(headersAt - started);
   const total = streamEndAt > started ? fmtMs(streamEndAt - started) : "-";
-  const cache = cachedTokens > 0 ? String(cachedTokens) : "-";
-  const tok = tokens > 0 ? String(tokens) : "-";
+  const inTok = inputTokens > 0 ? String(inputTokens) : "-";
+  const cacheTok = cachedTokens > 0 ? String(cachedTokens) : "-";
+  const outTok = tokens > 0 ? String(tokens) : "-";
   const tps = avgTps > 0 ? avgTps.toFixed(1) : "-";
   console.log(
-    `| ${reqId.padEnd(REQ_ID_WIDTH)} | ${ts.padEnd(10)} | ${tag} | ${(meta.plan ?? "-").padEnd(11)} | ${meta.model.padEnd(13)} | ${mode.padEnd(6)} | ${String(status).padStart(4)} | ${ttfb.padStart(7)} | ${cache.padStart(7)} | ${tok.padStart(5)} | ${tps.padStart(6)} | ${total.padStart(7)} |`,
+    `| ${reqId.padEnd(REQ_ID_WIDTH)} | ${ts.padEnd(10)} | ${tag} | ${(meta.plan ?? "-").padEnd(11)} | ${meta.model.padEnd(13)} | ${mode.padEnd(6)} | ${String(status).padStart(4)} | ${ttfb.padStart(7)} | ${inTok.padStart(7)} | ${cacheTok.padStart(7)} | ${outTok.padStart(7)} | ${tps.padStart(6)} | ${total.padStart(7)} |`,
   );
 }
 
@@ -1499,13 +1507,15 @@ function observeStream(
     const totalMs = endAt - requestSentAt;
     const tokens = metrics.tokens;
     const avgTps = metrics.tokensPerSecond;
-    printRow(reqId, format, meta, status, requestSentAt, requestSentAt + ttfbMs, tokens, avgTps, endAt, metrics.cachedTokens);
+    printRow(reqId, format, meta, status, requestSentAt, requestSentAt + ttfbMs, tokens, avgTps, endAt, metrics.cachedTokens, metrics.inputTokens);
     if (dumpOn) {
       dumpPhase(reqId, "upstream_stream_summary", {
         status,
         contentEncoding,
         compressed,
         totalBytes,
+        inputTokensObserved: metrics.inputTokens,
+        cachedTokensObserved: metrics.cachedTokens,
         tokensObserved: tokens,
         generationMs: metrics.generationMs,
         tokensPerSecond: avgTps,

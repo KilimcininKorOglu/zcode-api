@@ -67,3 +67,20 @@ describe("stream metrics cached tokens", () => {
     expect(m.cachedTokens).toBe(0);
   });
 });
+
+describe("stream metrics input tokens", () => {
+  it("records input_tokens from Anthropic message_start and usage", () => {
+    const m = new StreamMetrics();
+    m.observe({ type: "message_start", message: { usage: { input_tokens: 42, cache_read_input_tokens: 100 } } }, 0);
+    expect(m.inputTokens).toBe(42);
+    expect(m.cachedTokens).toBe(100);
+  });
+
+  it("derives uncached input from OpenAI prompt_tokens and cached_tokens", () => {
+    const m = new StreamMetrics();
+    m.observe({ usage: { prompt_tokens: 500, prompt_tokens_details: { cached_tokens: 420 } } }, 1000);
+    expect(m.inputTokens).toBe(80);
+    expect(m.cachedTokens).toBe(420);
+  });
+});
+

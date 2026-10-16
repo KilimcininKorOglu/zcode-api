@@ -15,9 +15,10 @@ async function captureRow(
   headersAt: number,
   streamEndAt: number,
   cachedTokens = 0,
+  inputTokens = 0,
 ): Promise<string> {
   const lines = await captureConsoleLog(async () => {
-    printRow("#041", "anthropic" as Format, meta, 200, started, headersAt, 2234, 37.2, streamEndAt, cachedTokens);
+    printRow("#041", "anthropic" as Format, meta, 200, started, headersAt, 2234, 37.2, streamEndAt, cachedTokens, inputTokens);
   });
   return lines.join("\n");
 }
@@ -62,15 +63,15 @@ describe("request log row plan column", () => {
   });
 });
 
-describe("request log row cache column", () => {
-  it("shows - when cachedTokens is 0", async () => {
-    const out = await captureRow({ model: "glm-5.3-flash", stream: true }, 0, 850, 900, 0);
-    expect(out).toContain(`| ${"-".padStart(7)} | ${"2234".padStart(5)} |`);
+describe("request log row token columns (Input, Cache, Output)", () => {
+  it("shows - when inputTokens and cachedTokens are 0", async () => {
+    const out = await captureRow({ model: "glm-5.3-flash", stream: true }, 0, 850, 900, 0, 0);
+    expect(out).toContain(`| ${"-".padStart(7)} | ${"-".padStart(7)} | ${"2234".padStart(7)} |`);
   });
 
-  it("shows cached tokens when cachedTokens is greater than 0", async () => {
-    const out = await captureRow({ model: "glm-5.3-flash", stream: true }, 0, 850, 900, 14480);
-    expect(out).toContain(`| ${"14480".padStart(7)} | ${"2234".padStart(5)} |`);
+  it("shows input and cached tokens when greater than 0", async () => {
+    const out = await captureRow({ model: "glm-5.3-flash", stream: true }, 0, 850, 900, 14480, 520);
+    expect(out).toContain(`| ${"520".padStart(7)} | ${"14480".padStart(7)} | ${"2234".padStart(7)} |`);
   });
 });
 
