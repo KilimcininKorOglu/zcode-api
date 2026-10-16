@@ -20,15 +20,17 @@
  *     other plan.
  *
  * Status is polled every `statusPollIntervalSec` (default 300s — the official
- * client's cadence). Auth (verified live 2026-10-13): `Authorization: Bearer
- * <zcode JWT>`, `X-Bigmodel-Authorization: <zcode JWT>` (NOT the coding-plan
- * API key), `Bigmodel-Target-Type: PERSONAL`. Without a stored JWT the whole
- * feature stays silently passive.
+ * client's cadence). Auth: `Authorization: Bearer <zcode JWT>`,
+ * `X-Bigmodel-Authorization: <MaaS coding-plan token>`,
+ * `Bigmodel-Target-Type: PERSONAL`. Client identity headers (X-Device-Mid,
+ * User-Agent, X-ZCode-App-Version, etc.) are injected to match the official
+ * desktop client. Without a stored JWT the whole feature stays silently passive.
  */
 import { randomUUID } from "node:crypto";
 import { DEFAULT_PLAN_AUTO_RESET, type PlanAutoResetConfig, type ProxyConfig } from "../config/types.js";
 import { loadCredential } from "../auth/store.js";
 import type { Credential } from "../auth/types.js";
+import { buildIdentityHeaders } from "../proxy/identity.js";
 import type { PlanTier } from "./auto.js";
 
 /** The reset plane lives on the ZCode gateway, not on the data-plane origin. */
@@ -51,12 +53,18 @@ export function planAutoResetOf(config: ProxyConfig): PlanAutoResetConfig {
   return config.planAutoReset ?? DEFAULT_PLAN_AUTO_RESET;
 }
 
+let activeConfig: ProxyConfig | null = null;
+
 /** Reset-plane headers for a stored credential; null without a zcode JWT. */
-function resetHeaders(cred: Credential | null): Record<string, string> | null {
+function resetHeaders(cred: Credential | null, config?: ProxyConfig): Record<string, string> | null {
   if (!cred?.jwt) return null;
+  const cfg = config ?? activeConfig;
+  const codingPlanAuth = cred.oauthAccessToken ?? cred.apiKey;
+  const identity = cfg?.identity ? buildIdentityHeaders(cfg.identity) : {};
   return {
+    ...identity,
     authorization: `Bearer ${cred.jwt}`,
-    "x-bigmodel-authorization": cred.jwt,
+    "x-bigmodel-authorization": codingPlanAuth,
     "bigmodel-target-type": "PERSONAL",
     accept: "application/json",
   };
@@ -95,11 +103,12 @@ async function requestEnvelope(
 export async function fetchPlanResetStatus(
   fetchImpl: typeof fetch = fetch,
   loadCredentialImpl: typeof loadCredential = loadCredential,
+  config?: ProxyConfig,
 ): Promise<number[] | null> {
   fetchImpl = testFetchImpl ?? fetchImpl;
   loadCredentialImpl = testLoadCredentialImpl ?? loadCredentialImpl;
   const cred = await loadCredentialImpl().catch(() => null);
-  const headers = resetHeaders(cred ?? null);
+  const headers = resetHeaders(cred ?? null, config);
   if (!headers) return null;
   const env = await requestEnvelope(`${RESET_ORIGIN}/api/v1/coding-plan/reset/status`, "GET", undefined, headers, fetchImpl);
   if (!env || env.code !== 0) return null;
@@ -135,11 +144,12 @@ export async function requestPlanResetOpportunity(
   fetchImpl: typeof fetch = fetch,
   loadCredentialImpl: typeof loadCredential = loadCredential,
   idempotencyKey?: string,
+  config?: ProxyConfig,
 ): Promise<ResetOpportunityResult | null> {
   fetchImpl = testFetchImpl ?? fetchImpl;
   loadCredentialImpl = testLoadCredentialImpl ?? loadCredentialImpl;
   const cred = await loadCredentialImpl().catch(() => null);
-  const headers = resetHeaders(cred ?? null);
+  const headers = resetHeaders(cred ?? null, config);
   if (!headers) return null;
 
   const key = idempotencyKey ?? pendingOpportunityKey ?? randomUUID();
@@ -205,6 +215,7 @@ export async function maybeRequestPlanResetOpportunity(
   fetchImpl: typeof fetch = fetch,
   loadCredentialImpl: typeof loadCredential = loadCredential,
   nowMs: number = Date.now(),
+  config?: ProxyConfig,
 ): Promise<boolean> {
   fetchImpl = testFetchImpl ?? fetchImpl;
   loadCredentialImpl = testLoadCredentialImpl ?? loadCredentialImpl;
@@ -214,7 +225,7 @@ export async function maybeRequestPlanResetOpportunity(
     return res?.granted ?? false;
   }
 
-  opportunityInFlight = requestPlanResetOpportunity(fetchImpl, loadCredentialImpl).finally(() => {
+  opportunityInFlight = requestPlanResetOpportunity(fetchImpl, loadCredentialImpl, undefined, config).finally(() => {
     opportunityInFlight = null;
   });
 
@@ -237,11 +248,12 @@ export async function maybeRequestPlanResetOpportunity(
 export async function usePlanReset(
   fetchImpl: typeof fetch = fetch,
   loadCredentialImpl: typeof loadCredential = loadCredential,
+  config?: ProxyConfig,
 ): Promise<boolean> {
   fetchImpl = testFetchImpl ?? fetchImpl;
   loadCredentialImpl = testLoadCredentialImpl ?? loadCredentialImpl;
   if (useInFlight) return useInFlight;
-  useInFlight = spendReset(fetchImpl, loadCredentialImpl).finally(() => {
+  useInFlight = spendReset(fetchImpl, loadCredentialImpl, config).finally(() => {
     useInFlight = null;
   });
   return useInFlight;
@@ -252,9 +264,10 @@ let useInFlight: Promise<boolean> | null = null;
 async function spendReset(
   fetchImpl: typeof fetch,
   loadCredentialImpl: typeof loadCredential,
+  config?: ProxyConfig,
 ): Promise<boolean> {
   const cred = await loadCredentialImpl().catch(() => null);
-  const headers = resetHeaders(cred ?? null);
+  const headers = resetHeaders(cred ?? null, config);
   if (!headers) return false;
   const env = await requestEnvelope(
     `${RESET_ORIGIN}/api/v1/coding-plan/reset/use`,
@@ -293,10 +306,11 @@ export function shouldUseReset(percentUsed: number | null, rights: number[], cfg
  * percent. Spends a right when a trigger holds and logs the spend once.
  */
 export async function maybeUseResetOnTick(config: ProxyConfig, percentUsed: number | null): Promise<void> {
+  activeConfig = config;
   const cfg = planAutoResetOf(config);
   if (!cfg.enabled || cachedFiveHourResets.length === 0) return;
   if (!shouldUseReset(percentUsed, cachedFiveHourResets, cfg, Date.now())) return;
-  const ok = await usePlanReset();
+  const ok = await usePlanReset(undefined, undefined, config);
   if (ok) {
     console.log(`plan reset: used FIVE_HOUR reset right (5h window ${percentUsed === null ? "unknown" : `%${percentUsed}`} used) — window re-opened`);
   }
@@ -343,11 +357,12 @@ export async function maybeUsePlanResetAndRetry(args: {
   rejectionBody?: string | null;
   rebuildAndDispatch: (plan: PlanTier) => Promise<Response>;
 }): Promise<{ handled: boolean; resp?: Response }> {
+  activeConfig = args.config;
   const cfg = planAutoResetOf(args.config);
   if (!cfg.enabled || args.plan !== "coding-plan" || cachedFiveHourResets.length === 0) return { handled: false };
   if (!cfg.useOn429) return { handled: false };
   if (isTransient429(args.rejectionBody ?? null)) return { handled: false };
-  const ok = await usePlanReset();
+  const ok = await usePlanReset(undefined, undefined, args.config);
   if (!ok) return { handled: false };
   console.log("plan reset: used FIVE_HOUR reset right on a coding-plan 429 — window re-opened, retrying the request");
   const resp = await args.rebuildAndDispatch(args.plan);
@@ -380,6 +395,7 @@ export interface PlanResetPollerDeps {
  * within one status call.
  */
 export function startPlanResetPoller(config: ProxyConfig, deps: PlanResetPollerDeps = {}): PlanResetPoller {
+  activeConfig = config;
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let firstRun = true;
@@ -395,8 +411,10 @@ export function startPlanResetPoller(config: ProxyConfig, deps: PlanResetPollerD
     },
     async tick(): Promise<void> {
       if (stopped) return;
-      await maybeRequestPlanResetOpportunity(deps.fetchImpl, deps.loadCredentialImpl);
-      const rights = await fetchPlanResetStatus(deps.fetchImpl, deps.loadCredentialImpl);
+      if (cachedFiveHourResets.length === 0) {
+        await maybeRequestPlanResetOpportunity(deps.fetchImpl, deps.loadCredentialImpl, Date.now(), config);
+      }
+      const rights = await fetchPlanResetStatus(deps.fetchImpl, deps.loadCredentialImpl, config);
       if (rights === null) return;
       const prev = cachedFiveHourResets;
       cachedFiveHourResets = rights;
@@ -436,6 +454,7 @@ export function __resetPlanResetStateForTests(): void {
   pendingOpportunityKey = null;
   testFetchImpl = null;
   testLoadCredentialImpl = null;
+  activeConfig = null;
 }
 
 /** Seed nextOpportunityCheckAt directly (tests only). */

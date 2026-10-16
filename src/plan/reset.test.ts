@@ -80,7 +80,27 @@ describe("fetchPlanResetStatus", () => {
     expect(rights).toEqual([1_800_000_000_000]);
     expect(calls[0].url).toBe("https://zcode.z.ai/api/v1/coding-plan/reset/status");
     expect(calls[0].headers?.authorization).toBe("Bearer jwt-1");
+    expect(calls[0].headers?.["x-bigmodel-authorization"]).toBe("key");
     expect(calls[0].headers?.["bigmodel-target-type"]).toBe("PERSONAL");
+  });
+
+  it("injects client identity headers and coding plan token", async () => {
+    const config = {
+      ...makeConfig(),
+      identity: {
+        appVersion: "3.15.3",
+        sourceTitle: "test-title",
+        refererOrigin: "https://zcode.z.ai",
+        deviceMid: "mid-uuid-123",
+      },
+    } as ProxyConfig;
+    const { fetch, calls } = mockFetch(() => new Response(STATUS_OK));
+    const rights = await fetchPlanResetStatus(fetch, async () => ({ ...cred("jwt-1"), oauthAccessToken: "oauth-tok" }), config);
+    expect(rights).toEqual([1_800_000_000_000]);
+    expect(calls[0].headers?.authorization).toBe("Bearer jwt-1");
+    expect(calls[0].headers?.["x-bigmodel-authorization"]).toBe("oauth-tok");
+    expect(calls[0].headers?.["X-Device-Mid"]).toBe("mid-uuid-123");
+    expect(calls[0].headers?.["X-ZCode-App-Version"]).toBe("3.15.3");
   });
 
   it("returns null on a rejected envelope (network / auth errors)", async () => {
@@ -290,6 +310,16 @@ describe("startPlanResetPoller", () => {
     }
     expect(cachedResetRights()).toEqual([]);
     expect(lines.some((l) => l.includes("no FIVE_HOUR rights left"))).toBe(true);
+  });
+
+  it("skips opportunity request when reset rights are already cached", async () => {
+    __setResetRightsForTests([Date.now() + 3600_000]);
+    const { fetch, calls } = mockFetch(() => new Response(STATUS_OK));
+    const poller = startPlanResetPoller(makeConfig(), { fetchImpl: fetch, loadCredentialImpl: async () => cred("jwt-1") });
+    await poller.tick();
+    poller.stop();
+    expect(calls.some((c) => c.url.includes("/opportunity"))).toBe(false);
+    expect(calls.some((c) => c.url.includes("/status"))).toBe(true);
   });
 
   it("exposes the config defaults through planAutoResetOf", () => {
