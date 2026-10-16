@@ -75,8 +75,13 @@ export function collectFromWire(wire: string): AnthropicMessagesResponse {
         const delta = event.delta as { stop_reason?: string | null; stop_sequence?: string | null } | undefined;
         if (delta?.stop_reason !== undefined) message.stop_reason = delta.stop_reason as AnthropicMessagesResponse["stop_reason"];
         if (delta?.stop_sequence !== undefined) message.stop_sequence = delta.stop_sequence;
-        const usage = event.usage as { output_tokens?: number } | undefined;
-        if (usage?.output_tokens !== undefined) message.usage.output_tokens = usage.output_tokens;
+        const usage = event.usage as Partial<AnthropicMessagesResponse["usage"]> | undefined;
+        if (usage) {
+          if (usage.output_tokens !== undefined) message.usage.output_tokens = usage.output_tokens;
+          if (usage.input_tokens !== undefined) message.usage.input_tokens = usage.input_tokens;
+          if (usage.cache_read_input_tokens !== undefined) message.usage.cache_read_input_tokens = usage.cache_read_input_tokens;
+          if (usage.cache_creation_input_tokens !== undefined) message.usage.cache_creation_input_tokens = usage.cache_creation_input_tokens;
+        }
         break;
       }
       case "message_stop": {

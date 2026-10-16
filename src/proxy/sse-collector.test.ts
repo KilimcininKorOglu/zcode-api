@@ -125,3 +125,36 @@ describe("collectAnthropicMessage", () => {
     expect(message.id).toBe("msg_c1");
   });
 });
+
+describe("collectFromWire — usage merging", () => {
+  it("folds input_tokens and cache_read_input_tokens from message_delta into message.usage", () => {
+    const wire = wireOf(
+      {
+        type: "message_start",
+        message: {
+          id: "msg_usage_test",
+          type: "message",
+          role: "assistant",
+          model: "glm-5.3-flash",
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 0, output_tokens: 0 },
+        },
+      },
+      { type: "content_block_start", index: 0, content_block: { type: "text", text: "ok" } },
+      { type: "content_block_stop", index: 0 },
+      {
+        type: "message_delta",
+        delta: { stop_reason: "end_turn", stop_sequence: null },
+        usage: { input_tokens: 250, output_tokens: 15, cache_read_input_tokens: 340000 },
+      },
+      { type: "message_stop" },
+    );
+    const message = collectFromWire(wire);
+    expect(message.usage.input_tokens).toBe(250);
+    expect(message.usage.output_tokens).toBe(15);
+    expect(message.usage.cache_read_input_tokens).toBe(340000);
+  });
+});
+
