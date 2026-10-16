@@ -13,6 +13,7 @@
 import { DEFAULT_MARKETING_CONFIG, type MarketingConfig, type ProxyConfig } from "../config/types.js";
 import { loadCredential } from "../auth/store.js";
 import type { Credential } from "../auth/types.js";
+import { buildIdentityHeaders } from "../proxy/identity.js";
 
 export interface MarketingTouchDelivery {
   campaign_id?: string;
@@ -42,11 +43,10 @@ export function marketingConfigOf(config: ProxyConfig): MarketingConfig {
 /** Build headers for marketing touch requests. Null without a stored JWT. */
 function marketingHeaders(cred: Credential | null, config: ProxyConfig): Record<string, string> | null {
   if (!cred?.jwt) return null;
+  const identity = config?.identity ? buildIdentityHeaders(config.identity) : {};
   return {
+    ...identity,
     authorization: `Bearer ${cred.jwt}`,
-    "x-device-mid": config.identity.deviceMid ?? "",
-    "x-client-language": "en-US",
-    "x-zcode-app-version": config.identity.appVersion,
     accept: "application/json",
   };
 }

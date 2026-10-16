@@ -27,6 +27,8 @@ import type { ProviderId } from "../provider/types.js";
 import { DEFAULT_APP_VERSION } from "../config/loader.js";
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
+import type { ProxyIdentity } from "../config/types.js";
+import { buildIdentityHeaders } from "../proxy/identity.js";
 
 // ---------------------------------------------------------------------------
 // Constants (from bundle)
@@ -200,26 +202,51 @@ class PollOAuthClient extends OAuthFlowClient {
   private flow: CliInitData | null = null;
   private pollToken = "";
 
+  private readonly appVersion: string;
+  private readonly identity?: ProxyIdentity;
+
   constructor(
     provider: ProviderId,
     fetchImpl: FetchFn = fetch,
     /** Injectable pause between polls (tests pass a no-op). */
     private readonly sleep: (ms: number) => Promise<void> = defaultSleep,
-    private readonly appVersion: string = DEFAULT_APP_VERSION,
+    appVersionOrIdentity: string | ProxyIdentity = DEFAULT_APP_VERSION,
+    identity?: ProxyIdentity,
   ) {
     super(provider, fetchImpl);
+    if (typeof appVersionOrIdentity === "object") {
+      this.identity = appVersionOrIdentity;
+      this.appVersion = appVersionOrIdentity.appVersion;
+    } else {
+      this.appVersion = appVersionOrIdentity;
+      this.identity = identity;
+    }
+  }
+
+  private getIdentityHeaders(): Record<string, string> {
+    const id = this.identity ?? {
+      appVersion: this.appVersion,
+      sourceTitle: "cli",
+      refererOrigin: "https://zcode.z.ai",
+    };
+    return buildIdentityHeaders(id);
   }
 
   start(): Promise<OAuthFlowStart> {
     this.flow = null;
     this.pollToken = randomBytes(32).toString("hex");
     return (async () => {
+      const idHeaders = this.getIdentityHeaders();
       const data = (await requestZcodeEnvelope(
         this.fetchImpl,
         `${ZCODE_API_BASE}/oauth/cli/init`,
         {
           method: "POST",
-          headers: { authorization: `Bearer ${this.pollToken}`, "content-type": "application/json" },
+          headers: {
+            ...idHeaders,
+            authorization: `Bearer ${this.pollToken}`,
+            "content-type": "application/json",
+          },
           body: JSON.stringify({ provider: this.provider }),
         },
         `${this.provider} login init`,
@@ -296,9 +323,13 @@ class PollOAuthClient extends OAuthFlowClient {
   private async pollOnce(flowId: string): Promise<{ retry: true } | { retry: false; data: Partial<CliPollData> | null }> {
     let resp: Response;
     try {
+      const idHeaders = this.getIdentityHeaders();
       resp = await this.fetchImpl(`${ZCODE_API_BASE}/oauth/cli/poll/${encodeURIComponent(flowId)}`, {
         method: "GET",
-        headers: { authorization: `Bearer ${this.pollToken}` },
+        headers: {
+          ...idHeaders,
+          authorization: `Bearer ${this.pollToken}`,
+        },
       });
     } catch {
       return { retry: true };
@@ -329,9 +360,10 @@ export class ZaiOAuthClient extends PollOAuthClient {
   constructor(
     fetchImpl: FetchFn = fetch,
     sleep: (ms: number) => Promise<void> = defaultSleep,
-    appVersion: string = DEFAULT_APP_VERSION,
+    appVersionOrIdentity: string | ProxyIdentity = DEFAULT_APP_VERSION,
+    identity?: ProxyIdentity,
   ) {
-    super("zai", fetchImpl, sleep, appVersion);
+    super("zai", fetchImpl, sleep, appVersionOrIdentity, identity);
   }
 }
 
@@ -340,9 +372,10 @@ export class BigmodelPollOAuthClient extends PollOAuthClient {
   constructor(
     fetchImpl: FetchFn = fetch,
     sleep: (ms: number) => Promise<void> = defaultSleep,
-    appVersion: string = DEFAULT_APP_VERSION,
+    appVersionOrIdentity: string | ProxyIdentity = DEFAULT_APP_VERSION,
+    identity?: ProxyIdentity,
   ) {
-    super("bigmodel", fetchImpl, sleep, appVersion);
+    super("bigmodel", fetchImpl, sleep, appVersionOrIdentity, identity);
   }
 }
 
@@ -367,6 +400,7 @@ interface AuthCodeConfig {
   readonly callbackPath: string;
   /** Key under `data` holding the provider access token: `data[field].access_token`. */
   readonly accessTokenField: string;
+  readonly identity?: ProxyIdentity;
 }
 
 /** Shape of the zcode.z.ai token-exchange response (`{code, data, msg}`). */
@@ -515,9 +549,14 @@ export class AuthCodeOAuthClient extends OAuthFlowClient {
     redirectUri: string,
     state: string,
   ): Promise<OAuthFlowTokens> {
+    const idHeaders = buildIdentityHeaders(this.config.identity ?? {
+      appVersion: DEFAULT_APP_VERSION,
+      sourceTitle: "cli",
+      refererOrigin: "https://zcode.z.ai",
+    });
     const resp = await this.fetchImpl(this.config.tokenUrl, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { ...idHeaders, "content-type": "application/json" },
       body: JSON.stringify({
         provider: this.config.provider,
         code: authCode,
@@ -595,11 +634,19 @@ const BIGMODEL_AUTH_CODE_CONFIG: AuthCodeConfig = {
 export class BigmodelOAuthClient extends AuthCodeOAuthClient {
   constructor(
     fetchImpl: FetchFn = fetch,
-    host: string = BIGMODEL_HOST,
+    hostOrIdentity: string | ProxyIdentity = BIGMODEL_HOST,
     appId: string = BIGMODEL_APP_ID,
+    identity?: ProxyIdentity,
   ) {
+    let host = BIGMODEL_HOST;
+    let resolvedIdentity = identity;
+    if (typeof hostOrIdentity === "object") {
+      resolvedIdentity = hostOrIdentity;
+    } else if (typeof hostOrIdentity === "string") {
+      host = hostOrIdentity;
+    }
     super(
-      { ...BIGMODEL_AUTH_CODE_CONFIG, authorizeUrl: `${host}/login`, appId },
+      { ...BIGMODEL_AUTH_CODE_CONFIG, authorizeUrl: `${host}/login`, appId, ...(resolvedIdentity ? { identity: resolvedIdentity } : {}) },
       fetchImpl,
     );
   }

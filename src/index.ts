@@ -484,7 +484,7 @@ export function createServeJobs(
     import("./proxy/captcha.js")
       .then(async (m) => {
         captchaModule = m;
-        await m.startCaptchaPool(config.identity.appVersion);
+        await m.startCaptchaPool(config.identity.appVersion, config.identity);
       })
       .catch((err) => {
         captchaPoolStarted = false;

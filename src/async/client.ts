@@ -22,10 +22,14 @@ import type {
   TicketStatusResult,
 } from "./types.js";
 import { OffPeakServerError } from "./types.js";
+import type { ProxyIdentity } from "../config/types.js";
+import { buildIdentityHeaders } from "../proxy/identity.js";
 
 export interface OffPeakClientOptions {
   origin: string;
   credentials: OffPeakCredentials;
+  /** Client identity headers to match official ZCode client (La / Nk). */
+  identity?: ProxyIdentity;
   /** Per-call timeout in ms (default 15000). Applies to all 4 methods. */
   controlTimeoutMs?: number;
   /** DI seam for tests. Default `globalThis.fetch`. */
@@ -55,7 +59,9 @@ export function createOffPeakClient(opts: OffPeakClientOptions): OffPeakClient {
   const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
 
   function buildHeaders(hasBody: boolean): Record<string, string> {
+    const idHeaders = opts.identity ? buildIdentityHeaders(opts.identity) : {};
     const h: Record<string, string> = {
+      ...idHeaders,
       authorization: `Bearer ${credentials.jwt}`,
       "x-coding-plan-api-key": credentials.codingPlanApiKey,
     };

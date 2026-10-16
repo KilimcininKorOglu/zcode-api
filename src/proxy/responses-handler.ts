@@ -215,7 +215,7 @@ export async function handleResponses(
   if (startPlan) {
     try {
       const captcha = opts.captcha ?? (await loadCaptcha());
-      const token = await captcha.getCaptchaToken(opts.config.identity.appVersion);
+      const token = await captcha.getCaptchaToken(opts.config.identity.appVersion, opts.config.identity);
       captchaHeaders = { [captcha.RETRY_HEADERS.PARAM]: token.verifyParam, [captcha.RETRY_HEADERS.REGION]: token.region };
     } catch {
       // Fall through: the 3007 retry below solves on demand.

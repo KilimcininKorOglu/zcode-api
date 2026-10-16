@@ -65,14 +65,41 @@ describe("ZaiOAuthClient (server-mediated cli login)", () => {
       expect(calls[0].url).toBe("https://zcode.z.ai/api/v1/oauth/cli/init");
       expect(calls[0].init.method).toBe("POST");
       expect(JSON.parse(String(calls[0].init.body))).toEqual({ provider: "zai" });
-      const bearer = String((calls[0].init.headers as Record<string, string>).authorization);
+      const headers = calls[0].init.headers as Record<string, string>;
+      const bearer = String(headers.authorization);
       expect(bearer).toMatch(/^Bearer [0-9a-f]{64}$/);
+      expect(headers["User-Agent"]).toContain("ZCode/");
+      expect(headers["HTTP-Referer"]).toBe("https://zcode.z.ai");
+      expect(headers["X-Title"]).toContain("Z Code@");
 
       expect(started.authorizeUrl).toContain("chat.z.ai/api/oauth/authorize");
       expect(started.callbackUrl).toBe("");
       expect(started.state).toBe("flow_abc");
     } finally {
       await client.close();
+    }
+  });
+
+  it("sends custom identity headers including X-Device-Mid", async () => {
+    const { impl, calls } = scriptedFetch([
+      () => envelopeResponse(initData()),
+    ]);
+    const customClient = new ZaiOAuthClient(impl, async () => {}, {
+      appVersion: "3.15.3",
+      sourceTitle: "test-oauth",
+      refererOrigin: "https://chat.z.ai",
+      deviceMid: "test-device-mid-oauth",
+    });
+
+    try {
+      await customClient.start();
+      const headers = calls[0].init.headers as Record<string, string>;
+      expect(headers["User-Agent"]).toBe("ZCode/3.15.3");
+      expect(headers["X-ZCode-App-Version"]).toBe("3.15.3");
+      expect(headers["X-Device-Mid"]).toBe("test-device-mid-oauth");
+      expect(headers["X-Title"]).toBe("Z Code@test-oauth");
+    } finally {
+      await customClient.close();
     }
   });
 
@@ -318,7 +345,9 @@ describe("BigmodelOAuthClient (auth-code flow)", () => {
   });
 
   it("exchangeCode unwraps the envelope and extracts bigmodel.access_token + jwt + userId", async () => {
-    const mockFetch = (async (_input: RequestInfo | URL): Promise<Response> => {
+    let capturedHeaders: Record<string, string> = {};
+    const mockFetch = (async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      capturedHeaders = (init?.headers ?? {}) as Record<string, string>;
       return envelopeResponse({
         token: "jwt_zcode",
         bigmodel: { access_token: "bm_access_123" },
@@ -326,11 +355,18 @@ describe("BigmodelOAuthClient (auth-code flow)", () => {
       });
     }) as typeof fetch;
 
-    const client = new BigmodelOAuthClient(mockFetch);
+    const client = new BigmodelOAuthClient(mockFetch, {
+      appVersion: "3.15.3",
+      sourceTitle: "bm-title",
+      refererOrigin: "https://chat.z.ai",
+      deviceMid: "bm-mid",
+    });
     const result = await client.exchangeCode("code_xyz", "http://127.0.0.1:9/callback/bigmodel", "st");
     expect(result.accessToken).toBe("bm_access_123");
     expect(result.jwt).toBe("jwt_zcode");
     expect(result.userId).toBe("u1");
+    expect(capturedHeaders["User-Agent"]).toBe("ZCode/3.15.3");
+    expect(capturedHeaders["X-Device-Mid"]).toBe("bm-mid");
   });
 
   it("exchangeCode throws when data.bigmodel.access_token is missing", async () => {

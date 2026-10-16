@@ -13,6 +13,7 @@
  * correlates fingerprint stability across requests; randomizing per-solve
  * flags it as `verifyCode: F001`. See captcha-happy.ts.
  */
+import os from "node:os";
 import { shutdownCaptchaSolver } from "./captcha-solver.js";
 import {
   configureCaptchaPool,
@@ -22,6 +23,8 @@ import {
   stopCaptchaPool,
   type CaptchaConfig,
 } from "./captcha-pool.js";
+import { buildIdentityHeaders, normalizePrintableHeaderValue } from "./identity.js";
+import type { ProxyIdentity } from "../config/types.js";
 
 const CAPTCHA_HEADER = "x-aliyun-captcha-verify-param";
 const REGION_HEADER = "x-aliyun-captcha-verify-region";
@@ -39,7 +42,7 @@ export function detectCaptchaChallenge(resp: Response): string | null {
 }
 
 
-async function fetchCaptchaConfig(appVersion: string): Promise<FetchedCaptchaConfig | null> {
+async function fetchCaptchaConfig(appVersion: string, identity?: ProxyIdentity): Promise<FetchedCaptchaConfig | null> {
   if (cachedConfig.value && cachedConfig.expiresAt > Date.now()) return cachedConfig.value;
   if (Date.now() < cfgNegUntil) return null;
   try {
@@ -52,7 +55,19 @@ async function fetchCaptchaConfig(appVersion: string): Promise<FetchedCaptchaCon
     const timer = setTimeout(() => controller.abort(), cfgTimeoutMs);
     let resp: Response;
     try {
-      resp = await fetch(`${CONFIGS_API}?app_version=${encodeURIComponent(appVersion)}&platform=win32-x64`, { signal: controller.signal });
+      const platform = normalizePrintableHeaderValue(process.env.ZCODE_IDENTITY_PLATFORM) ?? process.platform;
+      const arch = normalizePrintableHeaderValue(process.env.ZCODE_IDENTITY_ARCH) ?? os.arch();
+      const platformParam = `${platform}-${arch}`;
+      const id = identity ?? {
+        appVersion,
+        sourceTitle: "cli",
+        refererOrigin: "https://zcode.z.ai",
+      };
+      const headers = buildIdentityHeaders(id);
+      resp = await fetch(`${CONFIGS_API}?app_version=${encodeURIComponent(appVersion)}&platform=${encodeURIComponent(platformParam)}`, {
+        headers,
+        signal: controller.signal,
+      });
     } finally {
       clearTimeout(timer);
     }
@@ -72,8 +87,8 @@ async function fetchCaptchaConfig(appVersion: string): Promise<FetchedCaptchaCon
  * pre-solved token pool. Retries are handled inside the pool
  * (ZCODE_CAPTCHA_RETRIES attempts with a fresh solve per retry).
  */
-export async function getCaptchaToken(appVersion: string): Promise<{ verifyParam: string; region: string }> {
-  const cfg = await fetchCaptchaConfig(appVersion);
+export async function getCaptchaToken(appVersion: string, identity?: ProxyIdentity): Promise<{ verifyParam: string; region: string }> {
+  const cfg = await fetchCaptchaConfig(appVersion, identity);
   if (!cfg || !cfg.enabled || !cfg.prefix || !cfg.sceneId) throw new Error("Captcha config unavailable");
   // Pre-solved token pool: requests take an already-minted token (sub-ms)
   // while background solves refill -- the hot path never waits on a solve.
@@ -90,8 +105,8 @@ export function shutdownCaptcha(): void {
  * Start background pre-solving of the token pool (happy backend).
  * Warms only the idle minimum; the pool grows on demand with traffic.
  */
-export async function startCaptchaPool(appVersion: string): Promise<void> {
-  const cfg = await fetchCaptchaConfig(appVersion);
+export async function startCaptchaPool(appVersion: string, identity?: ProxyIdentity): Promise<void> {
+  const cfg = await fetchCaptchaConfig(appVersion, identity);
   if (!cfg || !cfg.enabled) return;
   // Size the pool before prefill: the module-level pool defers sizing to the
   // first configure() so a cold boot doesn't mint a storm of soon-expired

@@ -90,9 +90,10 @@ describe("fetchMarketingTouches", () => {
     expect(res).toHaveLength(2);
     expect(res[0].campaign_id).toBe("autumn-bonus-2026");
     expect(calls[0].headers?.authorization).toBe("Bearer jwt-token");
-    expect(calls[0].headers?.["x-device-mid"]).toBe("86ca9806-3fe6-4649-8ba9-bbf07f763f01");
-    expect(calls[0].headers?.["x-client-language"]).toBe("en-US");
-    expect(calls[0].headers?.["x-zcode-app-version"]).toBe("3.15.1");
+    expect(calls[0].headers?.["X-Device-Mid"]).toBe("86ca9806-3fe6-4649-8ba9-bbf07f763f01");
+    expect(calls[0].headers?.["X-ZCode-App-Version"]).toBe("3.15.1");
+    expect(calls[0].headers?.["User-Agent"]).toBe("ZCode/3.15.1");
+    expect(calls[0].headers?.["HTTP-Referer"]).toBe("https://zcode.z.ai");
   });
 
   it("handles non-zero code or network error gracefully", async () => {

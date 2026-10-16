@@ -146,6 +146,7 @@ function buildClient(opts: AsyncHandlerOptions, credentials: OffPeakCredentials)
   return createOffPeakClient({
     origin: opts.config.async.origin,
     credentials,
+    identity: opts.config.identity,
     controlTimeoutMs: opts.config.async.controlTimeoutMs,
     settleTimeoutMs: opts.config.async.settleTimeoutMs,
     fetchImpl: opts.fetchImpl,

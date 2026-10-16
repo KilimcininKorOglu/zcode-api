@@ -92,6 +92,30 @@ describe("createOffPeakClient — header composition", () => {
     expect(captured?.bigmodelProj).toBe("proj-456");
   });
 
+  it("includes client identity headers when identity option is provided", async () => {
+    let capturedHeaders: Headers | undefined;
+    const fetchImpl = makeMockFetch(async (req) => {
+      capturedHeaders = req.headers;
+      return jsonResp({ can_take_number: true });
+    });
+    const client = createOffPeakClient({
+      origin: "https://zcode.z.ai",
+      credentials: CRED,
+      identity: {
+        appVersion: "3.15.1",
+        sourceTitle: "cli",
+        refererOrigin: "https://zcode.z.ai",
+        deviceMid: "test-mid-123",
+      },
+      fetchImpl,
+    });
+    await client.getAvailability();
+    expect(capturedHeaders?.get("user-agent")).toBe("ZCode/3.15.1");
+    expect(capturedHeaders?.get("x-device-mid")).toBe("test-mid-123");
+    expect(capturedHeaders?.get("x-zcode-app-version")).toBe("3.15.1");
+    expect(capturedHeaders?.get("http-referer")).toBe("https://zcode.z.ai");
+  });
+
   it("strips trailing slashes from origin", async () => {
     let url = "";
     const fetchImpl = makeMockFetch(async (req) => {

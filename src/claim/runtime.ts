@@ -37,7 +37,7 @@ export function startAutoClaim(config: ProxyConfig, auth: AuthManager): ClaimSch
         deviceMid: config.identity.deviceMid,
       }),
     getCaptcha: async () => {
-      const { verifyParam, region } = await getCaptchaToken(config.identity.appVersion);
+      const { verifyParam, region } = await getCaptchaToken(config.identity.appVersion, config.identity);
       return { verifyParam, region: region || undefined };
     },
     config: {

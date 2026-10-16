@@ -237,7 +237,7 @@ export async function proxyRequest(
   if (startPlan) {
     try {
       const captcha = await loadCaptcha();
-      const token = await captcha.getCaptchaToken(config.identity.appVersion);
+      const token = await captcha.getCaptchaToken(config.identity.appVersion, config.identity);
       captchaHeaders = { [captcha.RETRY_HEADERS.PARAM]: token.verifyParam, [captcha.RETRY_HEADERS.REGION]: token.region };
     } catch {
       // Will solve on 403 fallback below
