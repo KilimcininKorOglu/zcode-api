@@ -61,6 +61,7 @@ import { clientAcceptsCoding, inflateFormatFor, inflateStreamForCodings, inflate
 import { probeFetchDecompressBehavior } from "./decompress-probe.js";
 import { collectAnthropicMessage } from "./sse-collector.js";
 import { appendErrorLog } from "./error-log.js";
+import { StreamMetrics } from "./stream-metrics.js";
 import { buildAnthropicMetadataUserId } from "./trace-headers.js";
 
 /** Options for the proxy handler. */
@@ -1417,27 +1418,20 @@ function observeStream(
 ): void {
   const compressed = contentEncoding !== null;
   const dumpOn = dumpEnabled();
-  let tokens = 0;
+  const sampleDecoder = new TextDecoder();
+  const metrics = new StreamMetrics();
   let sseBuffer = "";
   let firstChunkAt = 0;
+  let lastChunkAt = 0;
   let totalBytes = 0;
   let firstBytesSample = "";
 
-  function parseSse(text: string): void {
+  function parseSse(text: string, receivedAt: number): void {
     for (const line of text.split("\n")) {
       if (!line.startsWith("data:") || line.includes("[DONE]")) continue;
       try {
         const j = JSON.parse(line.slice(5).trim());
-        if (j.usage?.completion_tokens) { tokens = j.usage.completion_tokens; continue; }
-        if (j.usage?.output_tokens) { tokens = j.usage.output_tokens; continue; }
-        // OpenAI content delta: choices[0].delta.content
-        const oai = j.choices?.[0]?.delta?.content;
-        if (typeof oai === "string" && oai.length > 0) { tokens++; continue; }
-        // Anthropic content delta: type=content_block_delta, delta.type=text_delta
-        if (j.type === "content_block_delta" && j.delta?.type === "text_delta") {
-          const t = j.delta?.text;
-          if (typeof t === "string" && t.length > 0) tokens++;
-        }
+        metrics.observe(j, receivedAt);
       } catch {}
     }
   }
@@ -1449,28 +1443,30 @@ function observeStream(
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        lastChunkAt = performance.now();
         if (firstChunkAt === 0) firstChunkAt = Date.now();
         if (dumpOn && value) {
           totalBytes += value.byteLength;
           if (firstBytesSample.length < 4096) {
-            firstBytesSample += decoder.decode(value.slice(0, 4096 - firstBytesSample.length), { stream: true });
+            firstBytesSample += sampleDecoder.decode(value.slice(0, 4096 - firstBytesSample.length), { stream: true });
           }
         }
         if (!compressed) {
           sseBuffer += decoder.decode(value, { stream: true });
           const idx = sseBuffer.lastIndexOf("\n");
           if (idx >= 0) {
-            parseSse(sseBuffer.slice(0, idx));
+            parseSse(sseBuffer.slice(0, idx), lastChunkAt);
             sseBuffer = sseBuffer.slice(idx + 1);
           }
         }
       }
-      if (!compressed && sseBuffer) parseSse(sseBuffer);
+      if (!compressed && sseBuffer) parseSse(sseBuffer, lastChunkAt);
     } catch {}
     const endAt = Date.now();
     const ttfbMs = (firstChunkAt > 0 ? firstChunkAt : endAt) - requestSentAt;
     const totalMs = endAt - requestSentAt;
-    const avgTps = tokens > 0 && totalMs > 0 ? tokens / (totalMs / 1000) : 0;
+    const tokens = metrics.tokens;
+    const avgTps = metrics.tokensPerSecond;
     printRow(reqId, format, meta, status, requestSentAt, requestSentAt + ttfbMs, tokens, avgTps, endAt);
     if (dumpOn) {
       dumpPhase(reqId, "upstream_stream_summary", {
@@ -1479,6 +1475,8 @@ function observeStream(
         compressed,
         totalBytes,
         tokensObserved: tokens,
+        generationMs: metrics.generationMs,
+        tokensPerSecond: avgTps,
         ttfbMs,
         totalMs,
         firstBytesSample: firstBytesSample.length > 0 ? firstBytesSample.slice(0, 4096) : "(empty stream)",
