@@ -4,8 +4,8 @@
  */
 import { readFileSync, existsSync } from "node:fs";
 import { parse } from "yaml";
-import type { ClientIdentityConfig, PlanAutoResetConfig, PlanSwitchRule, PlanTier, ProxyConfig, ProviderEndpoints, ProxyIdentity, ResponsesConfig, McpConfig, AsyncConfig, EndpointRoutingConfig, ClientSigningConfig, HighspeedConfig, ClaimConfig } from "./types.js";
-import { DEFAULT_PLAN_AUTO_RESET, DEFAULT_PLAN_PRIORITY, DEFAULT_PLAN_POLL_INTERVAL_SEC, DEFAULT_PLAN_SWITCH_RULES } from "./types.js";
+import type { ClientIdentityConfig, PlanAutoResetConfig, PlanSwitchRule, PlanTier, ProxyConfig, ProviderEndpoints, ProxyIdentity, ResponsesConfig, McpConfig, AsyncConfig, EndpointRoutingConfig, ClientSigningConfig, HighspeedConfig, ClaimConfig, MarketingConfig } from "./types.js";
+import { DEFAULT_PLAN_AUTO_RESET, DEFAULT_PLAN_PRIORITY, DEFAULT_PLAN_POLL_INTERVAL_SEC, DEFAULT_PLAN_SWITCH_RULES, DEFAULT_MARKETING_CONFIG } from "./types.js";
 
 /** Environment variable keys that override YAML values. */
 const ENV = {
@@ -33,6 +33,9 @@ const ENV = {
   HIGHSPEED_ENABLED: "ZCODE_HIGHSPEED_ENABLED",
   MCP_GATEWAY_ENABLED: "ZCODE_MCP_GATEWAY",
   MCP_GATEWAY_ORIGIN: "ZCODE_MCP_GATEWAY_ORIGIN",
+  MARKETING_ENABLED: "ZCODE_MARKETING_ENABLED",
+  MARKETING_ORIGIN: "ZCODE_MARKETING_ORIGIN",
+  MARKETING_INTERVAL_SEC: "ZCODE_MARKETING_INTERVAL_SEC",
 } as const;
 
 /** Mirrors the ZCode desktop release (`_reverse/NOTEPAD.md`); bump per client
@@ -93,6 +96,9 @@ const DEFAULTS = {
   HIGHSPEED_ENABLED: true,
   HIGHSPEED_ORIGIN: "https://zcode.z.ai",
   HIGHSPEED_MODELS: ["glm-5.3", "glm-5.2", "glm-5.1"],
+  MARKETING_ENABLED: DEFAULT_MARKETING_CONFIG.enabled,
+  MARKETING_ORIGIN: DEFAULT_MARKETING_CONFIG.origin,
+  MARKETING_INTERVAL_SEC: DEFAULT_MARKETING_CONFIG.intervalSec,
 };
 
 /** Printable-ASCII gate copied from the ZCode bundle's `rYn` helper. */
@@ -165,6 +171,7 @@ export function loadConfig(path: string): ProxyConfig {
   const mcp = resolveMcpConfig(parsed?.mcp);
   const asyncCfg = resolveAsyncConfig(parsed?.async);
   const claimCfg = resolveClaimConfig(parsed?.claim);
+  const marketingCfg = resolveMarketingConfig(parsed?.marketing);
   const endpointRouting = resolveEndpointRoutingConfig(parsed?.endpointRouting);
   const clientSigning = resolveClientSigningConfig(parsed?.clientSigning);
   const highspeed = resolveHighspeedConfig(parsed?.highspeed);
@@ -192,6 +199,7 @@ export function loadConfig(path: string): ProxyConfig {
     mcp,
     async: asyncCfg,
     claim: claimCfg,
+    marketing: marketingCfg,
     logging: { level: logLevel },
   };
 
@@ -541,6 +549,31 @@ function resolveClaimConfig(raw: unknown): ClaimConfig {
     pollIntervalSec: resolvePositiveInt(pollIntervalEnv ?? obj.pollIntervalSec, DEFAULTS.CLAIM_POLL_INTERVAL_SEC, "claim.pollIntervalSec"),
     cooldownMs: resolvePositiveInt(obj.cooldownMs ?? obj.cooldown_ms, DEFAULTS.CLAIM_COOLDOWN_MS, "claim.cooldownMs"),
     planId: typeof obj.planId === "string" ? obj.planId.trim() : DEFAULTS.CLAIM_PLAN_ID,
+  };
+}
+
+function resolveMarketingConfig(raw: unknown): MarketingConfig {
+  const obj = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const enabledEnv = process.env[ENV.MARKETING_ENABLED];
+  const originEnv = process.env[ENV.MARKETING_ORIGIN];
+  const intervalEnv = process.env[ENV.MARKETING_INTERVAL_SEC];
+
+  const origin =
+    (originEnv ?? (typeof obj.origin === "string" ? obj.origin : DEFAULTS.MARKETING_ORIGIN)).trim() ||
+    DEFAULTS.MARKETING_ORIGIN;
+  validateOrigin(origin, "marketing.origin");
+
+  return {
+    enabled:
+      enabledEnv !== undefined
+        ? resolveBool(enabledEnv, DEFAULTS.MARKETING_ENABLED)
+        : resolveBool(obj.enabled, DEFAULTS.MARKETING_ENABLED),
+    origin,
+    intervalSec: resolvePositiveInt(
+      intervalEnv ?? obj.intervalSec ?? obj.interval_sec,
+      DEFAULTS.MARKETING_INTERVAL_SEC,
+      "marketing.intervalSec",
+    ),
   };
 }
 

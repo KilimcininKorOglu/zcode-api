@@ -49,6 +49,9 @@ function startWatcher(
       resetPollerRunning: () => false,
       startPlanResetPoller: () => {},
       stopPlanResetPoller: () => {},
+      marketingRunning: () => false,
+      startMarketingPoller: () => {},
+      stopMarketingPoller: () => {},
       warmCaptchaPool: () => {},
       ...handles,
     },
@@ -132,5 +135,20 @@ describe("watchConfigFile", () => {
     // cadence reaches the timer (claim-block pattern).
     writeFileSync(configPath(), `${BASE_YAML}planAutoSwitch: true\nplanPollIntervalSec: 5\n`);
     await waitFor(() => calls.filter((c) => c === "start").length === 2);
+  });
+
+  it("starts and stops the marketing poller with the config toggle", async () => {
+    writeFileSync(configPath(), `${BASE_YAML}marketing:\n  enabled: false\n`);
+    const current = loadConfig(configPath());
+    const calls: string[] = [];
+    startWatcher(current, {
+      marketingRunning: () => calls.length > 0 && calls[calls.length - 1] === "start",
+      startMarketingPoller: () => calls.push("start"),
+      stopMarketingPoller: () => calls.push("stop"),
+    });
+    writeFileSync(configPath(), `${BASE_YAML}marketing:\n  enabled: true\n`);
+    await waitFor(() => calls.includes("start"));
+    writeFileSync(configPath(), `${BASE_YAML}marketing:\n  enabled: false\n`);
+    await waitFor(() => calls.includes("stop"));
   });
 });

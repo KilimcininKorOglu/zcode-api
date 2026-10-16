@@ -230,6 +230,21 @@ claim:
   # Optional: claim a specific plan_id. Empty = highest-priority preview.
   planId: ""
 
+# Marketing touch auto-claimer (mirrors the ZCode client's MarketingService).
+# Periodically queries {origin}/api/v1/marketing/touch to check for active
+# campaigns, promotional gifts, or temporary perks granted to the account/device,
+# and sends {origin}/api/v1/marketing/touch/action with action_type="confirm" to
+# lock in and claim the benefit.
+#
+# Env overrides: ZCODE_MARKETING_ENABLED, ZCODE_MARKETING_INTERVAL_SEC,
+# ZCODE_MARKETING_ORIGIN.
+marketing:
+  # On by default: queries on boot and then periodically.
+  enabled: true
+  # Cadence in seconds (default: 1800 = 30 minutes).
+  intervalSec: 1800
+  origin: "https://zcode.z.ai"
+
 # Server-controlled upstream URL remapping (mirrors the ZCode client's
 # ProviderEndpointRoutingService). The proxy periodically fetches
 # {origin}/api/v1/agent/configs and rewrites matching upstream URLs per the

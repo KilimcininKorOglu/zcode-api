@@ -247,6 +247,14 @@ planAutoReset:
   statusPollIntervalSec: 300
 ```
 
+**Marketing & promotional gift auto-claim (`marketing`)**: with `marketing` (default on), the proxy mimics the official client's `MarketingService` by querying `GET /api/v1/marketing/touch` at startup and every `intervalSec` (default 1800s / 30m). Any active campaign deliveries, promotional gift tokens, or perks are acknowledged with `POST /api/v1/marketing/touch/action` (`action_type: "confirm"`), locking them into your account. Env overrides: `ZCODE_MARKETING_ENABLED`, `ZCODE_MARKETING_INTERVAL_SEC`.
+
+```yaml
+marketing:
+  enabled: true
+  intervalSec: 1800
+```
+
 **Editing config.yaml without a restart**: the running proxy watches the file and applies edits in place (watch for the `[config] reloaded: ...` log line). Flipping `claim.auto`, `planAutoSwitch` or `plan` also starts or stops the matching background job, and changing `planPollIntervalSec` restarts the watcher with the new cadence; a broken file keeps the running config and stays watching. Only `server` (port/host) needs a restart.
 
 For servers without a TUI, use a browser instead: set `ZCODE_PANEL_ENABLED=1` and `ZCODE_PANEL_TOKEN=<your-own-random-string>`, start, then forward `http://127.0.0.1:8090` over SSH — you can view status and quota, switch provider/plan, log in/out, watch live logs and the MCP list. The panel binds loopback by default (`ZCODE_PANEL_HOST` overrides the address, see below) and requires the token on every API call; without a token it does not start. Commands are dispatched in-process so no extra control port is opened. "Stop proxy" on the panel only stops the proxy — the process itself still exits cleanly (SIGTERM/SIGINT and panel shutdown both clear background timers — auto-claim, captcha pool — before exit); logging out from the panel also clears the running credential and stops the proxy so new requests cannot keep spending the old account's quota.

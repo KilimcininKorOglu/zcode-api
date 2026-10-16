@@ -276,6 +276,28 @@ export const DEFAULT_PLAN_AUTO_RESET: PlanAutoResetConfig = {
   statusPollIntervalSec: 300,
 };
 
+/**
+ * Marketing & Touch auto-claimer: periodically polls
+ * `GET {origin}/api/v1/marketing/touch` for targeted campaigns/promotions/gifts
+ * and automatically acknowledges / claims them via
+ * `POST {origin}/api/v1/marketing/touch/action` with `action_type: "confirm"`.
+ */
+export interface MarketingConfig {
+  /** Enable the marketing campaign auto-claimer. Default `true`. */
+  enabled: boolean;
+  /** Base origin of the marketing touch endpoints. Default `"https://zcode.z.ai"`. */
+  origin: string;
+  /** Check interval in seconds. Default `1800` (30 minutes). */
+  intervalSec: number;
+}
+
+/** Shipped defaults for {@link MarketingConfig}. */
+export const DEFAULT_MARKETING_CONFIG: MarketingConfig = {
+  enabled: true,
+  origin: "https://zcode.z.ai",
+  intervalSec: 1800,
+};
+
 /** Top-level proxy configuration. */
 export interface ProxyConfig {
   server: {
@@ -358,6 +380,8 @@ export interface ProxyConfig {
   async: AsyncConfig;
   /** Manual claim ("weekend plan") configuration. */
   claim: ClaimConfig;
+  /** Marketing & Touch promotional campaign auto-claimer. */
+  marketing?: MarketingConfig;
   logging: {
     level: "debug" | "info" | "warn" | "error";
   };

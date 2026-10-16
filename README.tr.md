@@ -248,6 +248,14 @@ planAutoReset:
   statusPollIntervalSec: 300
 ```
 
+**Pazarlama ve promosyon hediyesi otomatik alma (`marketing`)**: `marketing` (default açık) ile proxy, resmi istemcinin `MarketingService` davranışını taklit ederek açılışta ve her `intervalSec`te (default 1800 sn / 30 dk) `GET /api/v1/marketing/touch` uçunu yoklar. Hesaba tanımlanan aktif kampanya teslimatları, promosyon kuponları veya ek avantajlar `POST /api/v1/marketing/touch/action` (`action_type: "confirm"`) ile anında onaylanarak hesaba kilitlenir. Env override'ları: `ZCODE_MARKETING_ENABLED`, `ZCODE_MARKETING_INTERVAL_SEC`.
+
+```yaml
+marketing:
+  enabled: true
+  intervalSec: 1800
+```
+
 **config.yaml'ı restart olmadan düzenleme**: çalışan proxy dosyayı izler ve değişikliği yerinde uygular (`[config] reloaded: ...` log satırını izleyin). `claim.auto`, `planAutoSwitch` ya da `plan`ı değiştirmek ilgili arka plan işini başlatır/durdurur; `planPollIntervalSec`i değiştirmek watcher'ı yeni ritimle yeniden başlatır; bozuk bir dosya çalışan config'i korur ve izlemeye devam eder. Yalnız `server` (port/host) restart ister.
 
 TUI'siz sunucularda tarayıcıyı kullanın: `ZCODE_PANEL_ENABLED=1` ve `ZCODE_PANEL_TOKEN=<kendi-rastgele-stringiniz>` verip başlatın, sonra `http://127.0.0.1:8090` adresini SSH ile ileriye taşıyın; durum ve kotayı görebilir, provider/plan değiştirebilir, login/logout yapabilir, canlı logları ve MCP listesini izleyebilirsiniz. Panel varsayılan olarak yalnız loopback'e bağlanır (`ZCODE_PANEL_HOST` ile adres değiştirilebilir, aşağıya bakın), her API çağrısında token ister ve tokensız asla başlamaz; komutlar in-process dağıtılır, ekstra bir kontrol portu açılmaz. Paneldaki "Stop proxy" yalnız proxy'yi durdurur; sürecin kendisi temiz çıkar (SIGTERM/SIGINT ve panel shutdown çıkıştan önce arka plan zamanlayıcılarını, yani auto-claim'i ve captcha pool'unu temizler); panelden logout çalışan credential'ı da temizler ve proxy'yi durdurur, böylece yeni istekler eski hesabın kotasını harcayamaz.

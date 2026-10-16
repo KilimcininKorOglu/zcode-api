@@ -381,12 +381,14 @@ export function createServeJobs(
   let claimScheduler: { stop: () => void } | null = null;
   let planWatcher: { stop: () => void } | null = null;
   let resetPoller: { stop: () => void } | null = null;
+  let marketingPoller: { stop: () => void } | null = null;
   let captchaModule: { shutdownCaptcha: () => void } | null = null;
   // The dynamic imports resolve asynchronously; the pending flags keep a
   // config reload racing the first start from double-starting a job.
   let claimPending = false;
   let planPending = false;
   let resetPending = false;
+  let marketingPending = false;
   let captchaPoolStarted = false;
 
   const startClaimJob = (): void => {
@@ -452,6 +454,28 @@ export function createServeJobs(
     resetPoller = null;
     console.log(`${indent}plan reset: auto OFF`);
   };
+  const startMarketingJob = (): void => {
+    stopMarketingJob();
+    marketingPending = true;
+    import("./marketing/touch.js")
+      .then((m) => {
+        marketingPending = false;
+        marketingPoller = m.startMarketingPoller(config);
+        const intervalSec = config.marketing?.intervalSec ?? 1800;
+        console.log(`${indent}marketing: auto-claim ON (interval ${formatDuration(intervalSec * 1000)}${note})`);
+      })
+      .catch((err) => {
+        marketingPending = false;
+        console.error(`[marketing] poller failed to start: ${(err as Error).message}`);
+      });
+  };
+  const stopMarketingJob = (): void => {
+    marketingPending = false;
+    if (!marketingPoller) return;
+    marketingPoller.stop();
+    marketingPoller = null;
+    console.log(`${indent}marketing: auto-claim OFF`);
+  };
   const warmCaptchaPoolJob = (): void => {
     if (captchaPoolStarted || config.plan !== "start-plan") return;
     // Pre-solve the captcha token pool in the background so first requests
@@ -474,6 +498,7 @@ export function createServeJobs(
       if (config.claim.enabled && config.claim.auto) startClaimJob();
       if (config.planAutoSwitch) startPlanWatcherJob();
       if (planAutoResetOf(config).enabled) startPlanResetJob();
+      if (config.marketing?.enabled !== false) startMarketingJob();
     },
     handles: {
       claimRunning: () => claimScheduler !== null || claimPending,
@@ -485,6 +510,9 @@ export function createServeJobs(
       resetPollerRunning: () => resetPoller !== null || resetPending,
       startPlanResetPoller: startPlanResetJob,
       stopPlanResetPoller: stopPlanResetJob,
+      marketingRunning: () => marketingPoller !== null || marketingPending,
+      startMarketingPoller: startMarketingJob,
+      stopMarketingPoller: stopMarketingJob,
       warmCaptchaPool: warmCaptchaPoolJob,
     },
     stopForShutdown(cleared) {
@@ -503,6 +531,8 @@ export function createServeJobs(
       planWatcher = null;
       stopJob("plan reset poller", resetPoller);
       resetPoller = null;
+      stopJob("marketing auto-claimer", marketingPoller);
+      marketingPoller = null;
       stopJob("auto-claim", claimScheduler);
       claimScheduler = null;
       if (captchaModule) {

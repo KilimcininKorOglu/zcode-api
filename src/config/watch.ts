@@ -39,6 +39,10 @@ export interface ConfigWatchHandles {
   resetPollerRunning(): boolean;
   startPlanResetPoller(): void;
   stopPlanResetPoller(): void;
+  /** Running-or-starting state of the marketing auto-claimer poller. */
+  marketingRunning(): boolean;
+  startMarketingPoller(): void;
+  stopMarketingPoller(): void;
   /** Warm the captcha pool when the config moves to start-plan (no-op once up). */
   warmCaptchaPool(): void;
 }
@@ -112,6 +116,7 @@ function reconcileJobs(handles: ConfigWatchHandles, config: ProxyConfig, changed
   reconcileClaimJobs(handles, config, changed);
   reconcilePlanWatcherJobs(handles, config, changed);
   reconcilePlanResetJobs(handles, config, changed);
+  reconcileMarketingJobs(handles, config, changed);
 
   if (config.plan === "start-plan") handles.warmCaptchaPool();
 }
@@ -141,6 +146,16 @@ function reconcilePlanResetJobs(handles: ConfigWatchHandles, config: ProxyConfig
     handles.resetPollerRunning(),
     handles.startPlanResetPoller,
     handles.stopPlanResetPoller,
+  );
+}
+
+function reconcileMarketingJobs(handles: ConfigWatchHandles, config: ProxyConfig, changed: Set<string>): void {
+  reconcileToggleJob(
+    config.marketing?.enabled !== false,
+    changed.has("marketing"),
+    handles.marketingRunning(),
+    handles.startMarketingPoller,
+    handles.stopMarketingPoller,
   );
 }
 
