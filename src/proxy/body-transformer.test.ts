@@ -67,7 +67,7 @@ describe("transformRequestBody — stream_options.include_usage (OpenAI)", () =>
 });
 
 describe("transformRequestBody — cache_control (Anthropic)", () => {
-  it("adds cache_control to last user message with string content", () => {
+  it("adds cache_control to last user message and second-to-last message with string content", () => {
     const body = JSON.stringify({
       model: "glm-4.6",
       messages: [
@@ -82,9 +82,32 @@ describe("transformRequestBody — cache_control (Anthropic)", () => {
     expect(parsed.messages[2].content).toEqual([
       { type: "text", text: "second question", cache_control: { type: "ephemeral" } },
     ]);
-    // Earlier messages untouched
+    // Second-to-last msg also gets cache_control for multi-turn prefix cache hits
+    expect(parsed.messages[1].content).toEqual([
+      { type: "text", text: "answer", cache_control: { type: "ephemeral" } },
+    ]);
+    // Older messages untouched
     expect(parsed.messages[0].content).toBe("first question");
-    expect(parsed.messages[1].content).toBe("answer");
+  });
+
+  it("adds cache_control to system prompt and tools on coding-plan", () => {
+    const body = JSON.stringify({
+      system: "You are a coding assistant.",
+      tools: [
+        { name: "tool1", description: "First tool" },
+        { name: "tool2", description: "Second tool" },
+      ],
+      messages: [
+        { role: "user", content: "hello" },
+      ],
+    });
+    const out = transformRequestBody(body, { format: "anthropic" });
+    const parsed = JSON.parse(out as string);
+    expect(parsed.system).toEqual([
+      { type: "text", text: "You are a coding assistant.", cache_control: { type: "ephemeral" } },
+    ]);
+    expect(parsed.tools[0].cache_control).toBeUndefined();
+    expect(parsed.tools[1].cache_control).toEqual({ type: "ephemeral" });
   });
 
   it("adds cache_control to last content block when content is already array", () => {
@@ -142,7 +165,7 @@ describe("transformRequestBody — cache_control (Anthropic)", () => {
   it("is idempotent: an already-marked body is returned without modification", () => {
     const body = JSON.stringify({
       messages: [
-        { role: "user", content: [{ type: "text", text: "early" }] },
+        { role: "user", content: [{ type: "text", text: "early", cache_control: { type: "ephemeral" } }] },
         { role: "assistant", content: [{ type: "text", text: "reply", cache_control: { type: "ephemeral" } }] },
       ],
     });

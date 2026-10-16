@@ -120,8 +120,53 @@ function isCanonicalEphemeral(v: unknown): boolean {
  *     to prevent accumulating beyond Anthropic's 4-breakpoint ceiling.
  */
 function applyAnthropicCacheControl(body: Record<string, unknown>, startPlan = false): boolean {
+  let cleaned = false;
+  let marked = false;
+
+  // On coding-plan, cache the system prompt and tools definitions if present
+  if (!startPlan) {
+    if (body.system !== undefined) {
+      if (typeof body.system === "string" && body.system.trim().length > 0) {
+        body.system = [{ type: "text", text: body.system, cache_control: { type: "ephemeral" } }];
+        marked = true;
+      } else if (Array.isArray(body.system) && body.system.length > 0) {
+        for (let i = 0; i < body.system.length - 1; i++) {
+          const b = body.system[i];
+          if (typeof b === "object" && b !== null && "cache_control" in b) {
+            delete (b as Record<string, unknown>).cache_control;
+            cleaned = true;
+          }
+        }
+        const lastSys = body.system[body.system.length - 1];
+        if (typeof lastSys === "object" && lastSys !== null) {
+          if (!isCanonicalEphemeral(lastSys.cache_control)) {
+            lastSys.cache_control = { type: "ephemeral" };
+            marked = true;
+          }
+        }
+      }
+    }
+
+    if (Array.isArray(body.tools) && body.tools.length > 0) {
+      for (let i = 0; i < body.tools.length - 1; i++) {
+        const t = body.tools[i];
+        if (typeof t === "object" && t !== null && "cache_control" in t) {
+          delete (t as Record<string, unknown>).cache_control;
+          cleaned = true;
+        }
+      }
+      const lastTool = body.tools[body.tools.length - 1];
+      if (typeof lastTool === "object" && lastTool !== null) {
+        if (!isCanonicalEphemeral(lastTool.cache_control)) {
+          lastTool.cache_control = { type: "ephemeral" };
+          marked = true;
+        }
+      }
+    }
+  }
+
   const messages = body.messages;
-  if (!Array.isArray(messages) || messages.length === 0) return false;
+  if (!Array.isArray(messages) || messages.length === 0) return marked || cleaned;
 
   const nonSystemIndices: number[] = [];
   for (let i = 0; i < messages.length; i++) {
@@ -130,17 +175,16 @@ function applyAnthropicCacheControl(body: Record<string, unknown>, startPlan = f
       nonSystemIndices.push(i);
     }
   }
-  if (nonSystemIndices.length === 0) return false;
+  if (nonSystemIndices.length === 0) return marked || cleaned;
 
   const lastIndex = nonSystemIndices[nonSystemIndices.length - 1]!;
-  // On coding-plan (!startPlan), retain or place a breakpoint on the second-to-last non-system
+  // On coding-plan (!startPlan), place a breakpoint on the second-to-last non-system
   // message so multi-turn conversations achieve prefix cache hits (Anthropic 4-breakpoint budget).
   // On start-plan, the 3 official system blocks already consume 3 breakpoints, leaving room for only 1.
   const secondLastIndex = (!startPlan && nonSystemIndices.length >= 2)
     ? nonSystemIndices[nonSystemIndices.length - 2]
     : undefined;
 
-  let cleaned = false;
   // Phase 1: clear stale markers on non-system messages older than the second-to-last
   for (let i = 0; i < messages.length; i++) {
     if (i === lastIndex || i === secondLastIndex) continue;
@@ -155,14 +199,19 @@ function applyAnthropicCacheControl(body: Record<string, unknown>, startPlan = f
     }
   }
 
-  let marked = false;
-
   // Phase 2: mark the last non-system message's last block with canonical ephemeral
   const lastMsg = messages[lastIndex]!;
   if (typeof lastMsg.content === "string") {
     lastMsg.content = [{ type: "text", text: lastMsg.content, cache_control: { type: "ephemeral" } }];
     marked = true;
   } else if (Array.isArray(lastMsg.content) && lastMsg.content.length > 0) {
+    for (let b = 0; b < lastMsg.content.length - 1; b++) {
+      const blk = lastMsg.content[b];
+      if (typeof blk === "object" && blk !== null && "cache_control" in blk) {
+        delete blk.cache_control;
+        cleaned = true;
+      }
+    }
     const lastBlock = lastMsg.content[lastMsg.content.length - 1];
     if (typeof lastBlock === "object" && lastBlock !== null) {
       if (!isCanonicalEphemeral(lastBlock.cache_control)) {
@@ -172,17 +221,26 @@ function applyAnthropicCacheControl(body: Record<string, unknown>, startPlan = f
     }
   }
 
-  // Phase 3: on coding-plan, if the second-to-last non-system message already carries cache_control,
-  // ensure it is preserved and normalized to canonical ephemeral
+  // Phase 3: on coding-plan, ensure the second-to-last non-system message has a breakpoint
+  // so the incoming request hits the cache from the previous turn (Anthropic 4-breakpoint budget).
   if (secondLastIndex !== undefined) {
     const secondLastMsg = messages[secondLastIndex]!;
-    if (Array.isArray(secondLastMsg.content) && secondLastMsg.content.length > 0) {
-      for (const block of secondLastMsg.content) {
-        if (typeof block === "object" && block !== null && "cache_control" in block) {
-          if (!isCanonicalEphemeral(block.cache_control)) {
-            block.cache_control = { type: "ephemeral" };
-            marked = true;
-          }
+    if (typeof secondLastMsg.content === "string") {
+      secondLastMsg.content = [{ type: "text", text: secondLastMsg.content, cache_control: { type: "ephemeral" } }];
+      marked = true;
+    } else if (Array.isArray(secondLastMsg.content) && secondLastMsg.content.length > 0) {
+      for (let b = 0; b < secondLastMsg.content.length - 1; b++) {
+        const blk = secondLastMsg.content[b];
+        if (typeof blk === "object" && blk !== null && "cache_control" in blk) {
+          delete blk.cache_control;
+          cleaned = true;
+        }
+      }
+      const lastBlock = secondLastMsg.content[secondLastMsg.content.length - 1];
+      if (typeof lastBlock === "object" && lastBlock !== null) {
+        if (!isCanonicalEphemeral(lastBlock.cache_control)) {
+          lastBlock.cache_control = { type: "ephemeral" };
+          marked = true;
         }
       }
     }
