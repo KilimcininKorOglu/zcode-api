@@ -242,7 +242,7 @@ export async function proxyRequest(
     }
   }
 
-  const useOrderedTransport = shouldUseOrderedTransport(config, clientSession, hasCustomFetchImpl);
+  const useOrderedTransport = shouldUseOrderedTransport(clientSession, hasCustomFetchImpl);
   let upstreamHeaderPairs = buildUpstreamHeaderPairs(clientReq, upstreamFormat, cred, config.identity, plan, captchaHeaders, clientSession);
   if (highspeedCard && highspeedAuth) {
     highspeedOrigPairs = upstreamHeaderPairs;
@@ -629,7 +629,7 @@ export async function proxyRequest(
   return passthroughResponse(upstreamResp, clientReq.headers.get("accept-encoding"));
 }
 
-export function shouldUseOrderedTransport(config: ProxyConfig, clientSession: ClientSessionResult | undefined, hasCustomFetchImpl: boolean): boolean {
+export function shouldUseOrderedTransport(clientSession: ClientSessionResult | undefined, hasCustomFetchImpl: boolean): boolean {
   if (hasCustomFetchImpl) return false;
   return clientSession?.action === "enforce" || clientSession?.source === "explicit";
 }
@@ -659,7 +659,7 @@ export function capOrderedAcceptEncoding(
 }
 
 /** Max attempts (initial + 2 retries) for transient CONNECT-level failures. */
-export const MAX_CONNECT_ATTEMPTS = 3;
+const MAX_CONNECT_ATTEMPTS = 3;
 
 /** Error thrown when the ladder sees the client signal already aborted. A
  * stable string so the 502 catch site can recognize it without typing. */

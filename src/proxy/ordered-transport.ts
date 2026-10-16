@@ -2,7 +2,7 @@ import { connect as connectTcp, type Socket } from "node:net";
 import { connect as connectTls, type TLSSocket } from "node:tls";
 import { KNOWN_CODING_TOKENS, inflateFormatFor, newInflateStream } from "./inflate.js";
 
-export type OrderedHeaderPair = [string, string];
+type OrderedHeaderPair = [string, string];
 
 export interface OrderedUpstreamRequest {
   url: string;

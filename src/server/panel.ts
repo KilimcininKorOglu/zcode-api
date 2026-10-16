@@ -86,7 +86,7 @@ export interface PanelSettings {
 }
 
 /** Request handler produced by {@link createPanelHandler}. */
-export type PanelHandler = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
+type PanelHandler = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
 
 /**
  * True when `ZCODE_PANEL_ENABLED` asks for the panel. Kept deliberately strict
@@ -183,10 +183,9 @@ async function readBody(req: IncomingMessage): Promise<string | null> {
 }
 
 /**
- * Build the panel request handler. Exported separately from
- * {@link startPanelServer} so tests can drive it without binding a port.
+ * Build the request handler used by {@link startPanelServer}.
  */
-export function createPanelHandler(opts: PanelOptions): PanelHandler {
+function createPanelHandler(opts: PanelOptions): PanelHandler {
   const token = opts.token;
   return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const method = req.method ?? "GET";

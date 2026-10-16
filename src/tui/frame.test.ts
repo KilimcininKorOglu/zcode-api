@@ -269,7 +269,7 @@ describe("buildFrame", () => {
   });
 
   test("quota card renders coding-plan windows after credit buckets", () => {
-    const twoHoursOut = Date.now() + 2 * 3600e3; // <=6h -> positional "5h" label
+    const twoHoursOut = Date.now() + 2 * 3600e3; // <=6h -> "5h" label
     const text = plainLines(baseState({
       quota: {
         status: "ok",
@@ -277,7 +277,9 @@ describe("buildFrame", () => {
         coding: {
           level: "max",
           rows: [
-            { type: "TIME_LIMIT", remaining: 36, unit: "prompt", nextResetTime: twoHoursOut },
+            // MCP tool-call window — dropped, never rendered as LLM usage.
+            { type: "TIME_LIMIT", remaining: 3836, nextResetTime: Date.now() + 3 * 86400e3 },
+            { type: "TOKENS_LIMIT", remaining: 36, unit: "prompt", nextResetTime: twoHoursOut },
             { type: "WEEK_LIMIT", remaining: 500 },
           ],
         },
@@ -288,11 +290,12 @@ describe("buildFrame", () => {
     })).join("\n");
     expect(text).toContain("Balances");
     expect(text).toContain("Coding");
-    // Window names are positional by reset time — raw upstream types never render.
-    expect(text).toContain("5h");
     expect(text).not.toContain("TIME_LIMIT");
+    expect(text).not.toContain("3,836");
+    // Window names are horizon-based — known-shape rows never show raw types.
+    expect(text).toContain("5h");
     // Mirror of the official panel: remaining alone — upstream `number` is not
-    // a comparable total (live TIME_LIMIT row: remaining=3894, number=1).
+    // a comparable total (live TIME_LIMIT row: remaining=3836, number=1).
     expect(text).toContain("36 prompt");
     expect(text).toContain("in ");
     expect(text).toContain("· max");
@@ -302,99 +305,70 @@ describe("buildFrame", () => {
   });
 
   test("coding rows carry their own group label and render standalone", () => {
-    const text = plainLines(baseState({
-      quota: {
-        status: "ok",
-        balances: [],
-        coding: { level: null, rows: [{ type: "TIME_LIMIT", remaining: 9, nextResetTime: Date.now() + 3600e3 }] },
-        errors: [],
-        error: "",
-        fetchedAt: Date.now(),
-      },
-    })).join("\n");
+    const quota = {
+      status: "ok" as const,
+      balances: [],
+      coding: { level: null, rows: [{ type: "TOKENS_LIMIT", remaining: 9, nextResetTime: Date.now() + 3600e3 }] },
+      errors: [],
+      error: "",
+      fetchedAt: Date.now(),
+    };
+    const text = plainLines(baseState({ quota })).join("\n");
     expect(text).toContain("Coding");
     expect(text).not.toContain("Balances");
-    const codingLine = plainLines(baseState({
-      quota: {
-        status: "ok",
-        balances: [],
-        coding: { level: null, rows: [{ type: "TIME_LIMIT", remaining: 9, nextResetTime: Date.now() + 3600e3 }] },
-        errors: [],
-        error: "",
-        fetchedAt: Date.now(),
-      },
-    })).find((l) => l.includes("5h")) ?? "";
+    const codingLine = plainLines(baseState({ quota })).find((l) => l.includes("5h")) ?? "";
     expect(codingLine).toContain("9 left");
     expect(codingLine).not.toContain("/");
     expect(text).toContain("in ");
   });
 
-  test("coding windows get semantic labels, bars and countdowns (live 2026-09-30 shape)", () => {
-    const now = Date.now();
+  test("MCP tool-call window (TIME_LIMIT) is dropped, not mislabeled as an LLM window", () => {
     const text = plainLines(baseState({
       quota: {
         status: "ok",
         balances: [],
         coding: {
-          level: "max",
-          rows: [
-            { type: "TIME_LIMIT", remaining: 3891, percentage: 2, nextResetTime: now + 14 * 86400e3 },
-            { type: "TOKENS_LIMIT", percentage: 3, nextResetTime: now + 4.5 * 3600e3 },
-            { type: "TOKENS_LIMIT", percentage: 60, nextResetTime: now + 3.75 * 86400e3 },
-          ],
+          level: null,
+          rows: [{ type: "TIME_LIMIT", remaining: 3836, percentage: 4, nextResetTime: Date.now() + 3600e3 }],
         },
         errors: [],
         error: "",
-        fetchedAt: now,
+        fetchedAt: Date.now(),
       },
     })).join("\n");
-    // Positional by reset asc: 4.5h -> 5h, 3.75d -> Weekly, 14d -> Monthly.
+    expect(text).toContain("(no quota entries reported by upstream)");
+    expect(text).not.toContain("3,836");
+    expect(text).not.toContain("Weekly");
+  });
+
+  test("coding windows get semantic labels, bars and countdowns (live 2026-10-12 shape)", () => {
+    const now = Date.now();
+    // Exact live /quota shape (2026-10-12, max tier), upstream order.
+    const rows = [
+      { type: "TOKENS_LIMIT", percentage: 1, nextResetTime: now + 4.9 * 3600e3 },
+      { type: "TIME_LIMIT", remaining: 3836, percentage: 4, nextResetTime: now + 3 * 86400e3 + 3600e3 },
+      { type: "TOKENS_LIMIT", percentage: 59, nextResetTime: now + 4 * 86400e3 + 23 * 3600e3 },
+    ];
+    const quota = { status: "ok" as const, balances: [], coding: { level: "max", rows }, errors: [], error: "", fetchedAt: now };
+    const text = plainLines(baseState({ quota })).join("\n");
+    // Horizon labels: 4.9h → 5h, 4d23h → Weekly. The MCP row is dropped.
     expect(text).toContain("5h");
     expect(text).toContain("Weekly");
-    expect(text).toContain("Monthly");
+    expect(text).not.toContain("Monthly");
     expect(text).not.toContain("TIME_LIMIT");
     expect(text).not.toContain("TOKENS_LIMIT");
-    expect(text).toContain("3,891 left");
-    expect(text).toContain("40% left"); // 1 - 60%
-    const weeklyLine = plainLines(baseState({
-      quota: {
-        status: "ok",
-        balances: [],
-        coding: {
-          level: "max",
-          rows: [
-            { type: "TIME_LIMIT", remaining: 3891, percentage: 2, nextResetTime: now + 14 * 86400e3 },
-            { type: "TOKENS_LIMIT", percentage: 3, nextResetTime: now + 4.5 * 3600e3 },
-            { type: "TOKENS_LIMIT", percentage: 60, nextResetTime: now + 3.75 * 86400e3 },
-          ],
-        },
-        errors: [],
-        error: "",
-        fetchedAt: now,
-      },
-    })).find((l) => l.includes("Weekly")) ?? "";
+    expect(text).not.toContain("3,836");
+    expect(text).toContain("99% left"); // 1 − 1%
+    expect(text).toContain("41% left"); // 1 − 59%
+    const weeklyLine = plainLines(baseState({ quota })).find((l) => l.includes("Weekly")) ?? "";
     expect(weeklyLine).toContain("["); // bracketed progress bar renders
     expect(weeklyLine).toContain("█");
-    expect(weeklyLine).toContain("40%");
-    // All bar starts align in the same column — the name column is padded by display width ("5h" vs "Weekly")
-    const barCols = plainLines(baseState({
-      quota: {
-        status: "ok",
-        balances: [],
-        coding: {
-          level: "max",
-          rows: [
-            { type: "TIME_LIMIT", remaining: 3891, percentage: 2, nextResetTime: now + 14 * 86400e3 },
-            { type: "TOKENS_LIMIT", percentage: 3, nextResetTime: now + 4.5 * 3600e3 },
-            { type: "TOKENS_LIMIT", percentage: 60, nextResetTime: now + 3.75 * 86400e3 },
-          ],
-        },
-        errors: [],
-        error: "",
-        fetchedAt: now,
-      },
-    })).filter((l) => l.includes("[") && (l.includes("█") || l.includes("░"))).map((l) => l.indexOf("["));
-    expect(barCols.length).toBe(3);
+    expect(weeklyLine).toContain("41%");
+    // All bar starts align in the same column
+    const barCols = plainLines(baseState({ quota }))
+      .filter((l) => l.includes("[") && (l.includes("█") || l.includes("░")))
+      .map((l) => l.indexOf("["));
+    expect(barCols.length).toBe(2);
     expect(new Set(barCols).size).toBe(1);
   });
 

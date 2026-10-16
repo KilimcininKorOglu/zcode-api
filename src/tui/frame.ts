@@ -13,7 +13,7 @@
  */
 import { displayWidth, truncateToWidth } from "./width.js";
 
-export type Seg = { t: string; c?: string };
+type Seg = { t: string; c?: string };
 
 /** What a mouse click on a button should do. `key` reuses the key bindings. */
 export type ClickAction =
@@ -44,7 +44,7 @@ export function findRegion(regions: readonly ClickRegion[], row: number, col: nu
 }
 
 /** One per-model balance window shown as a row in the Quota card. */
-export interface QuotaBalanceRow {
+interface QuotaBalanceRow {
   showName: string;
   remainingUnits: number;
   totalUnits: number;
@@ -54,7 +54,7 @@ export interface QuotaBalanceRow {
 }
 
 /** One coding-plan usage window (monitor plane `limits[]` entry). */
-export interface QuotaCodingRow {
+interface QuotaCodingRow {
   /** Server-defined window type; `TIME_LIMIT`/`TOKENS_LIMIT` are the count/token windows. */
   type: string;
   remaining?: number;
@@ -343,18 +343,20 @@ function friendlyWindowType(type: string): string {
 }
 
 /**
- * Window semantic name: rank by ascending reset time + horizon check (5h → weekly → monthly).
- * Pinned with live data (2026-09-30, max tier): the three windows reset in 4h30m / 3d18h / 14d,
- * landing exactly on the three ranks — never show raw TIME_LIMIT/TOKENS_LIMIT. When rank and
- * horizon disagree, honestly fall back to the cycle/type name instead of forcing a label.
+ * Window semantic name: discriminated by type + horizon, never by ascending reset time rank.
+ * The rank approach was falsified with live data (2026-10-12, max tier): three windows in
+ * ascending reset order are 5h TOKENS_LIMIT / MCP tool-call TIME_LIMIT / weekly TOKENS_LIMIT.
+ * The MCP tool-call window (TIME_LIMIT) is filtered out before calling this function.
+ * When reset time is missing or out of bounds, honestly falls back to cycle/type name.
  */
-function codingWindowLabel(type: string, nextResetTime: number | undefined, pos: number, nowMs: number): string {
+function codingWindowLabel(type: string, nextResetTime: number | undefined, nowMs: number): string {
   const horizon = nextResetTime !== undefined ? toEpochMs(nextResetTime) - nowMs : undefined;
-  if (pos === 0 && horizon !== undefined && horizon <= 6 * 3600e3) return "5h";
-  if (pos === 1 && horizon !== undefined && horizon <= 8 * 86400e3) return "Weekly";
-  if (pos === 2 && horizon !== undefined && horizon <= 45 * 86400e3) return "Monthly";
   if (horizon === undefined) return friendlyWindowType(type);
-  return horizon >= 0 && horizon <= 45 * 86400e3 ? "Monthly" : "Cycle";
+  if (horizon < 0) return "Cycle";
+  if (horizon <= 6 * 3600e3) return "5h";
+  if (horizon <= 8 * 86400e3) return "Weekly";
+  if (horizon <= 45 * 86400e3) return "Monthly";
+  return "Cycle";
 }
 
 /** At most this many per-model balance rows — the card must stay bounded so the Logs card keeps room on short terminals. */
@@ -473,6 +475,9 @@ export function buildFrame(s: FrameState): Frame {
       // Live data (2026-09-30, max tier): upstream `total`/`number` are junk
       // (1/5 on real rows) while `percentage` is self-consistent — the bar is
       // the remaining share derived from it, never an X/Y fabrication.
+      // `TIME_LIMIT` rows are the MCP tool-call window (live 2026-10-12:
+      // remaining=3836 / percentage=4 = the official panel's "Tool calls" card) —
+      // MCP balance is unrelated to LLM usage, so exclude from Coding rows.
       const coding = s.quota.coding?.rows ?? [];
       type QuotaTableRow = { label: string; segs: Seg[] };
       const unitNote = (u: string | undefined): Seg[] =>
@@ -480,9 +485,11 @@ export function buildFrame(s: FrameState): Frame {
       const nowMs = Date.now();
       const remainingFrac = (pct: number | undefined): number | undefined =>
         pct !== undefined && pct >= 0 && pct <= 100 ? 1 - pct / 100 : undefined;
-      const sortedCoding = [...coding].sort(
-        (a, b) => (a.nextResetTime ?? Number.POSITIVE_INFINITY) - (b.nextResetTime ?? Number.POSITIVE_INFINITY),
-      );
+      const sortedCoding = [...coding]
+        .filter((c) => c.type !== "TIME_LIMIT")
+        .sort(
+          (a, b) => (a.nextResetTime ?? Number.POSITIVE_INFINITY) - (b.nextResetTime ?? Number.POSITIVE_INFINITY),
+        );
       const rows: QuotaTableRow[] = [
         ...s.quota.balances.map((b, i): QuotaTableRow => {
           const exp = b.expiresAt ? fmtExpiry(b.expiresAt) : "";
@@ -516,7 +523,7 @@ export function buildFrame(s: FrameState): Frame {
           return {
             label: i === 0 ? "Coding" : "",
             segs: [
-              { t: padName(truncateToWidth(codingWindowLabel(c.type, c.nextResetTime, i, nowMs), 13)), c: CYAN },
+              { t: padName(truncateToWidth(codingWindowLabel(c.type, c.nextResetTime, nowMs), 13)), c: CYAN },
               { t: "  " },
               ...quotaBar(frac, barColor),
               { t: "  " },
@@ -537,7 +544,11 @@ export function buildFrame(s: FrameState): Frame {
       }
     }
 
-    const totalRows = s.quota.balances.length + (s.quota.coding?.rows.length ?? 0);
+    // Hidden-row count tracks what this card actually renders: TIME_LIMIT
+    // (MCP tool-call) rows are filtered out above and must not count here.
+    const totalRows =
+      s.quota.balances.length +
+      (s.quota.coding?.rows.filter((c) => c.type !== "TIME_LIMIT").length ?? 0);
     const hiddenModels = Math.max(0, totalRows - quotaRows);
     const refreshRow = composeRow(w, lines.length, "", [
       { t: " Refresh ", c: BTN_GRAY, action: { kind: "key", key: "r" } },

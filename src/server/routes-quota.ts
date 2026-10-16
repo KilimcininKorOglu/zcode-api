@@ -42,8 +42,10 @@ export interface QuotaPlanEntry {
 
 /**
  * One usage window from the coding-plan monitor plane (`limits[]` entry).
- * `type` values are server-defined; `TIME_LIMIT` (the 5h/weekly prompt window
- * of individual coding plans) is the shape the official panel prefers.
+ * `type` values are server-defined. Live (2026-10-12, max tier): the 5h/weekly
+ * prompt windows are `TOKENS_LIMIT`; `TIME_LIMIT` is the MCP tool-call window
+ * (remaining counts tool calls, percentage = used share — the official panel's
+ * "Tool calls" card), not a prompt window.
  */
 export interface QuotaCodingLimit {
   type: string;

@@ -20,7 +20,7 @@ import { saveCredential, clearCredential, loadCredential } from "./auth/store.js
 import type { QuotaSnapshot } from "./server/routes-quota.js";
 
 /** Supported plan tiers. Mirrors `ProxyConfig.plan`. */
-export type PlanTier = "coding-plan" | "start-plan";
+type PlanTier = "coding-plan" | "start-plan";
 
 /** The control protocol: request shape. */
 export type ControlCommand =
@@ -36,7 +36,7 @@ export type ControlCommand =
   | { cmd: "shutdown" };
 
 /** Successful response envelope. */
-export type ControlOk =
+type ControlOk =
   | { ok: true; state: "running"; provider: ProviderId; plan: PlanTier; proxyPort: number; loggedIn: boolean }
   | { ok: true; event: "oauthUrl"; authorizeUrl: string; callbackPort: number }
   | { ok: true; event: "loginOk"; provider: ProviderId }
@@ -49,7 +49,7 @@ export type ControlOk =
   | { ok: true; event: "shuttingDown" };
 
 /** Failure response envelope. */
-export interface ControlError {
+interface ControlError {
   ok: false;
   error: string;
 }
@@ -57,12 +57,12 @@ export interface ControlError {
 export type ControlResponse = ControlOk | ControlError;
 
 /** Result type returned by lifecycle hooks (start/stop proxy). */
-export type LifecycleResult =
+type LifecycleResult =
   | { ok: true; port: number }
   | { ok: false; error: string };
 
 /** Result type returned by `setConfig` hook. */
-export type ConfigUpdateResult =
+type ConfigUpdateResult =
   | { ok: true; provider: ProviderId; plan: PlanTier }
   | { ok: false; error: string };
 

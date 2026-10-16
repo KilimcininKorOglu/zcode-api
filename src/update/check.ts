@@ -157,14 +157,6 @@ export function detectContainerRuntime(
   return declared === "" ? null : "unknown";
 }
 
-/** Back-compat convenience wrapper around {@link detectContainerRuntime}. */
-export function isContainerRuntime(
-  env: Env = process.env,
-  exists: (path: string) => boolean = existsSync,
-): boolean {
-  return detectContainerRuntime(env, exists) !== null;
-}
-
 /** Update hint for the detected runtime; the image is immutable either way. */
 export function updateCommand(release: ReleaseInfo, runtime: ContainerRuntime | null): string {
   switch (runtime) {
