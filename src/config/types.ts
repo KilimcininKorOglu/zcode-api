@@ -198,6 +198,25 @@ export interface ClientSigningConfig {
   enabled: boolean;
 }
 
+/**
+ * HighSpeed card manager (ZCode 3.15.1 HighspeedCardService mirror).
+ * When coding-plan requests arrive, draws are lazily triggered
+ * (`POST {origin}/api/v1/highspeed/draw`). Eligible requests within the card
+ * window (server expires_at, baseline ~5min) share the card: the model is
+ * rewritten to the card's model, auth is replaced with the JWT + card-id set,
+ * and requests remain unsigned (official static rule). task_id reuses
+ * client-session affinity inference. When accounts are not in the rollout
+ * (503 / biz 3404), a 10min negative cache prevents repeated latency spikes.
+ */
+export interface HighspeedConfig {
+  /** Enable the highspeed card worker. Default `true` (the official client has no toggle at all). */
+  enabled: boolean;
+  /** Base origin of the highspeed gateway. Default `"https://zcode.z.ai"`. */
+  origin: string;
+  /** Eligible model prefixes that trigger draws / accept cards. Default `["glm-5.3", "glm-5.2", "glm-5.1"]`. */
+  models: string[];
+}
+
 /** Upstream plan tiers the routing and auto-switch move between. */
 export type PlanTier = "coding-plan" | "start-plan";
 
@@ -325,8 +344,10 @@ export interface ProxyConfig {
   responses: ResponsesConfig;
   /** Server-controlled upstream URL remapping (ultra endpoints). */
   endpointRouting: EndpointRoutingConfig;
-  /** Client request signing V4 (Ed25519 + PoW, gate-driven). */
+  /** Client request signing V4 (Ed25519 + PoW, static coding-plan rule). */
   clientSigning: ClientSigningConfig;
+  /** HighSpeed card worker (enabled by default — the official client has no toggle). */
+  highspeed: HighspeedConfig;
   /** GLM MCP hosted-tool configuration. */
   mcp: McpConfig;
   /** Async (off-peak / idle-plan) bridge configuration. */
