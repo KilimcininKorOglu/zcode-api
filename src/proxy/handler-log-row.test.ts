@@ -14,9 +14,10 @@ async function captureRow(
   started: number,
   headersAt: number,
   streamEndAt: number,
+  cachedTokens = 0,
 ): Promise<string> {
   const lines = await captureConsoleLog(async () => {
-    printRow("#041", "anthropic" as Format, meta, 200, started, headersAt, 2234, 37.2, streamEndAt);
+    printRow("#041", "anthropic" as Format, meta, 200, started, headersAt, 2234, 37.2, streamEndAt, cachedTokens);
   });
   return lines.join("\n");
 }
@@ -60,3 +61,16 @@ describe("request log row plan column", () => {
     expect(out).toContain(`| ${"-".padEnd(11)} | glm-4.6`);
   });
 });
+
+describe("request log row cache column", () => {
+  it("shows - when cachedTokens is 0", async () => {
+    const out = await captureRow({ model: "glm-5.3-flash", stream: true }, 0, 850, 900, 0);
+    expect(out).toContain(`| ${"-".padStart(7)} | ${"2234".padStart(5)} |`);
+  });
+
+  it("shows cached tokens when cachedTokens is greater than 0", async () => {
+    const out = await captureRow({ model: "glm-5.3-flash", stream: true }, 0, 850, 900, 14480);
+    expect(out).toContain(`| ${"14480".padStart(7)} | ${"2234".padStart(5)} |`);
+  });
+});
+

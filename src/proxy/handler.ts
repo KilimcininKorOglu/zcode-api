@@ -1051,6 +1051,7 @@ function batchJsonResponse(
   meta: RequestMeta,
   started: number,
   headersAt: number,
+  cachedTokens = 0,
 ): Response {
   const payload = new TextEncoder().encode(json);
   const respHeaders = new Headers();
@@ -1061,10 +1062,10 @@ function batchJsonResponse(
   }
   if (clientAcceptsGzip(clientReq)) {
     respHeaders.set("content-encoding", "gzip");
-    printRow(reqId, format, meta, upstream.status, started, headersAt, outputTokens, 0, 0);
+    printRow(reqId, format, meta, upstream.status, started, headersAt, outputTokens, 0, 0, cachedTokens);
     return new Response(gzipSync(payload), { status: upstream.status, headers: respHeaders });
   }
-  printRow(reqId, format, meta, upstream.status, started, headersAt, outputTokens, 0, 0);
+  printRow(reqId, format, meta, upstream.status, started, headersAt, outputTokens, 0, 0, cachedTokens);
   return new Response(payload, { status: upstream.status, headers: respHeaders });
 }
 
@@ -1100,7 +1101,8 @@ async function translatedBatchResponse(
     return errorResponse(502, "translation_failed", `upstream returned invalid Anthropic message: ${JSON.stringify(parsedAnthropic).slice(0, 200)}`);
   }
   const openaiResp = translateResponseAnthropicToOpenAI(parsedAnthropic, model);
-  return batchJsonResponse(upstream, clientReq, JSON.stringify(openaiResp), openaiResp.usage?.completion_tokens ?? 0, reqId, format, meta, started, headersAt);
+  const cachedTokens = openaiResp.usage?.prompt_tokens_details?.cached_tokens ?? parsedAnthropic.usage?.cache_read_input_tokens ?? 0;
+  return batchJsonResponse(upstream, clientReq, JSON.stringify(openaiResp), openaiResp.usage?.completion_tokens ?? 0, reqId, format, meta, started, headersAt, cachedTokens);
 }
 
 async function translatedOpenAIToAnthropicBatchResponse(
@@ -1121,7 +1123,8 @@ async function translatedOpenAIToAnthropicBatchResponse(
     return errorResponse(502, "translation_failed", `upstream returned non-JSON body: ${(err as Error).message}`);
   }
   const anthropicResp = translateResponseOpenAIToAnthropic(parsedOpenAI);
-  return batchJsonResponse(upstream, clientReq, JSON.stringify(anthropicResp), anthropicResp.usage.output_tokens, reqId, format, meta, started, headersAt);
+  const cachedTokens = parsedOpenAI.usage?.prompt_tokens_details?.cached_tokens ?? 0;
+  return batchJsonResponse(upstream, clientReq, JSON.stringify(anthropicResp), anthropicResp.usage.output_tokens, reqId, format, meta, started, headersAt, cachedTokens);
 }
 
 function translateAnthropicBody(body: string | undefined): Response | string | undefined {
@@ -1247,7 +1250,8 @@ async function collectedBatchResponse(
     printRow(reqId, format, meta, 502, started, headersAt, 0, 0, 0);
     return errorResponse(502, "upstream_stream_failed", (err as Error).message);
   }
-  return batchJsonResponse(upstream, clientReq, JSON.stringify(message), message.usage?.output_tokens ?? 0, reqId, format, meta, started, headersAt);
+  const cachedTokens = message.usage?.cache_read_input_tokens ?? 0;
+  return batchJsonResponse(upstream, clientReq, JSON.stringify(message), message.usage?.output_tokens ?? 0, reqId, format, meta, started, headersAt, cachedTokens);
 }
 
 let reqCounter = 0;
@@ -1337,10 +1341,10 @@ function printHeader(): void {
   // First column matches REQ_ID_WIDTH (a boot-scoped id like `741f-#001`),
   // the Model column the longest known model name (`glm-5.3-flash`, 13).
   console.log(
-    "| #         | Time       | Fmt | Plan        | Model         | Mode   | Stat |    TTFB |   Tok |  tok/s |   Total |",
+    "| #         | Time       | Fmt | Plan        | Model         | Mode   | Stat |    TTFB |   Cache |   Tok |  tok/s |   Total |",
   );
   console.log(
-    "|-----------|------------|-----|-------------|---------------|--------|------|---------|-------|--------|---------|",
+    "|-----------|------------|-----|-------------|---------------|--------|------|---------|---------|-------|--------|---------|",
   );
 }
 
@@ -1354,6 +1358,7 @@ export function printRow(
   tokens: number,
   avgTps: number,
   streamEndAt: number,
+  cachedTokens = 0,
 ): void {
   if (status >= 400) recordRequestError(reqId, format, meta, status, started, headersAt, tokens, streamEndAt);
   printHeader();
@@ -1365,6 +1370,7 @@ export function printRow(
     const totalMs = streamEndAt > started ? streamEndAt - started : ttfbMs;
     const ttfbStr = fmtMs(ttfbMs);
     const tokStr = tokens > 0 ? `${tokens}tok` : "";
+    const cacheStr = cachedTokens > 0 ? `${cachedTokens}cache` : "";
     const tpsStr = avgTps > 0 ? `${avgTps.toFixed(0)}t/s` : "";
     const parts = [reqId, tag, meta.model, String(status), mode];
     if (meta.stream && streamEndAt > started) {
@@ -1372,6 +1378,7 @@ export function printRow(
     } else {
       parts.push(ttfbStr);
     }
+    if (cacheStr) parts.push(cacheStr);
     if (tokStr) parts.push(tokStr);
     if (tpsStr) parts.push(tpsStr);
     console.log(parts.join(" "));
@@ -1383,10 +1390,11 @@ export function printRow(
   // 1s, seconds below 1m, `NmNs` above — a 60s stream must not read "60054ms".
   const ttfb = fmtMs(headersAt - started);
   const total = streamEndAt > started ? fmtMs(streamEndAt - started) : "-";
+  const cache = cachedTokens > 0 ? String(cachedTokens) : "-";
   const tok = tokens > 0 ? String(tokens) : "-";
   const tps = avgTps > 0 ? avgTps.toFixed(1) : "-";
   console.log(
-    `| ${reqId.padEnd(REQ_ID_WIDTH)} | ${ts.padEnd(10)} | ${tag} | ${(meta.plan ?? "-").padEnd(11)} | ${meta.model.padEnd(13)} | ${mode.padEnd(6)} | ${String(status).padStart(4)} | ${ttfb.padStart(7)} | ${tok.padStart(5)} | ${tps.padStart(6)} | ${total.padStart(7)} |`,
+    `| ${reqId.padEnd(REQ_ID_WIDTH)} | ${ts.padEnd(10)} | ${tag} | ${(meta.plan ?? "-").padEnd(11)} | ${meta.model.padEnd(13)} | ${mode.padEnd(6)} | ${String(status).padStart(4)} | ${ttfb.padStart(7)} | ${cache.padStart(7)} | ${tok.padStart(5)} | ${tps.padStart(6)} | ${total.padStart(7)} |`,
   );
 }
 
@@ -1491,7 +1499,7 @@ function observeStream(
     const totalMs = endAt - requestSentAt;
     const tokens = metrics.tokens;
     const avgTps = metrics.tokensPerSecond;
-    printRow(reqId, format, meta, status, requestSentAt, requestSentAt + ttfbMs, tokens, avgTps, endAt);
+    printRow(reqId, format, meta, status, requestSentAt, requestSentAt + ttfbMs, tokens, avgTps, endAt, metrics.cachedTokens);
     if (dumpOn) {
       dumpPhase(reqId, "upstream_stream_summary", {
         status,

@@ -41,3 +41,29 @@ describe("stream generation throughput", () => {
     expect(m.tokens).toBe(100);
   });
 });
+
+describe("stream metrics cached tokens", () => {
+  it("records cache_read_input_tokens from Anthropic message_start and usage", () => {
+    const m1 = new StreamMetrics();
+    m1.observe({ type: "message_start", message: { usage: { input_tokens: 100, cache_read_input_tokens: 80 } } }, 0);
+    expect(m1.cachedTokens).toBe(80);
+
+    const m2 = new StreamMetrics();
+    m2.observe({ usage: { cache_read_input_tokens: 1500 } }, 1000);
+    expect(m2.cachedTokens).toBe(1500);
+  });
+
+  it("records prompt_tokens_details.cached_tokens from OpenAI usage", () => {
+    const m = new StreamMetrics();
+    m.observe({ usage: { prompt_tokens: 500, prompt_tokens_details: { cached_tokens: 420 } } }, 1000);
+    expect(m.cachedTokens).toBe(420);
+  });
+
+  it("ignores non-numeric or negative cached token counts", () => {
+    const m = new StreamMetrics();
+    m.observe({ usage: { prompt_tokens_details: { cached_tokens: -10 } } }, 1000);
+    expect(m.cachedTokens).toBe(0);
+    m.observe({ usage: { cache_read_input_tokens: NaN } }, 2000);
+    expect(m.cachedTokens).toBe(0);
+  });
+});
