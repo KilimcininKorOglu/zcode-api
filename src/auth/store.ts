@@ -4,8 +4,8 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, renameSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { homedir } from "node:os";
-import { createHash } from "node:crypto";
+import { homedir, platform, userInfo } from "node:os";
+import { createHash, createDecipheriv } from "node:crypto";
 import type { Credential } from "./types.js";
 
 const ENV_SECRET = "ZCODE_PROXY_CREDENTIAL_SECRET";
@@ -156,11 +156,70 @@ export async function loadCredential(): Promise<Credential | null> {
   }
 
   try {
-    return JSON.parse(json) as Credential;
+    const cred = JSON.parse(json) as Credential;
+    if (!cred.oauthAccessToken) {
+      const hostToken = tryReadHostZCodeAccessToken(cred.provider);
+      if (hostToken) {
+        cred.oauthAccessToken = hostToken;
+        saveCredential(cred).catch(() => {});
+      }
+    }
+    return cred;
   } catch (e) {
     console.warn(`Ignoring corrupted credentials at ${storeFile()}: ${(e as Error).message}`);
     return null;
   }
+}
+
+/**
+ * Attempt to decrypt and read the OAuth access token from the local ZCode desktop client
+ * store (~/.zcode/v2/credentials.json). Returns null if not present or decrypt fails.
+ */
+export function tryReadHostZCodeAccessToken(provider: string): string | null {
+  const credPath = join(homedir(), ".zcode", "v2", "credentials.json");
+  if (!existsSync(credPath)) return null;
+  try {
+    const raw = JSON.parse(readFileSync(credPath, "utf-8"));
+    const keyName = provider === "bigmodel" ? "oauth:bigmodel:access_token" : "oauth:zai:access_token";
+    const enc = raw[keyName];
+    if (typeof enc !== "string" || !enc.startsWith("enc:v1:")) return null;
+
+    const parts = enc.slice("enc:v1:".length).split(".");
+    if (parts.length !== 3) return null;
+    const [ivB64, tagB64, ctB64] = parts;
+    const iv = Buffer.from(ivB64, "base64url");
+    const tag = Buffer.from(tagB64, "base64url");
+    const ct = Buffer.from(ctB64, "base64url");
+
+    let username = "unknown";
+    try {
+      username = userInfo().username;
+    } catch {}
+    const secret = `zcode-credential-fallback:${platform()}:${homedir()}:${username}`;
+    const key = createHash("sha256").update(secret, "utf-8").digest();
+
+    const decipher = createDecipheriv("aes-256-gcm", key, iv);
+    decipher.setAuthTag(tag);
+    const decrypted = Buffer.concat([decipher.update(ct), decipher.final()]).toString("utf-8");
+    return decrypted.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Attempt to read deviceMid from ~/.zcode/v2/telemetry-state.json.
+ */
+export function tryReadHostZCodeDeviceMid(): string | null {
+  const p = join(homedir(), ".zcode", "v2", "telemetry-state.json");
+  if (!existsSync(p)) return null;
+  try {
+    const raw = JSON.parse(readFileSync(p, "utf-8"));
+    if (typeof raw.deviceMid === "string" && raw.deviceMid.trim().length > 0) {
+      return raw.deviceMid.trim();
+    }
+  } catch {}
+  return null;
 }
 
 export function clearCredential(): void {

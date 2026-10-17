@@ -153,7 +153,7 @@ export class KeyResolver {
         throw new Error("zai API key copy response is missing secretKey");
       }
 
-      return { apiKey, secret, provider: "zai", userId };
+      return { apiKey, secret, provider: "zai", userId, oauthAccessToken: accessToken };
     }
 
     const host = "https://bigmodel.cn";

@@ -62,7 +62,7 @@ export function normalizePrintableHeaderValue(raw: string | undefined): string |
   return v.length > 0 && ASCII_PRINTABLE.test(v) ? v : undefined;
 }
 
-function normalizeOsCategory(platform: NodeJS.Platform): string {
+export function normalizeOsCategory(platform: NodeJS.Platform): string {
   switch (platform) {
     case "darwin":
       return "macos";
@@ -74,7 +74,7 @@ function normalizeOsCategory(platform: NodeJS.Platform): string {
 }
 
 /** Mirrors the bundle's `lsa()` / `V8i()`: Intl locale, wrapped in try/catch. */
-function resolveClientLanguage(): string | undefined {
+export function resolveClientLanguage(): string | undefined {
   const override = normalizePrintableHeaderValue(process.env.ZCODE_IDENTITY_CLIENT_LANGUAGE);
   if (override) return override;
   try {
@@ -85,7 +85,7 @@ function resolveClientLanguage(): string | undefined {
 }
 
 /** Mirrors the bundle's `csa()`: Intl timezone, wrapped in try/catch. */
-function resolveClientTimezone(): string | undefined {
+export function resolveClientTimezone(): string | undefined {
   const override = normalizePrintableHeaderValue(process.env.ZCODE_IDENTITY_CLIENT_TIMEZONE);
   if (override) return override;
   try {

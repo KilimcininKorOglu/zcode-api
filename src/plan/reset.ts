@@ -31,6 +31,7 @@ import { DEFAULT_PLAN_AUTO_RESET, type PlanAutoResetConfig, type ProxyConfig } f
 import { loadCredential } from "../auth/store.js";
 import type { Credential } from "../auth/types.js";
 import { buildIdentityHeaders } from "../proxy/identity.js";
+import { ensureDailyActiveReported } from "../telemetry/heartbeat.js";
 import type { PlanTier } from "./auto.js";
 
 /** The reset plane lives on the ZCode gateway, not on the data-plane origin. */
@@ -149,7 +150,11 @@ export async function requestPlanResetOpportunity(
   fetchImpl = testFetchImpl ?? fetchImpl;
   loadCredentialImpl = testLoadCredentialImpl ?? loadCredentialImpl;
   const cred = await loadCredentialImpl().catch(() => null);
-  const headers = resetHeaders(cred ?? null, config);
+  const cfg = config ?? activeConfig;
+  if (cred && cfg?.identity) {
+    await ensureDailyActiveReported(cred, cfg.identity, fetchImpl).catch(() => false);
+  }
+  const headers = resetHeaders(cred ?? null, cfg ?? undefined);
   if (!headers) return null;
 
   const key = idempotencyKey ?? pendingOpportunityKey ?? randomUUID();

@@ -7,7 +7,7 @@ import { watchConfigFile, type ConfigWatchHandles } from "./config/watch.js";
 import { AuthManager } from "./auth/manager.js";
 import { startServer, type ProxyServer } from "./server/server.js";
 import { collectQuotaSnapshot } from "./server/routes-quota.js";
-import { loadCredential, saveCredential, clearCredential, getStorePath } from "./auth/store.js";
+import { loadCredential, saveCredential, clearCredential, getStorePath, tryReadHostZCodeDeviceMid } from "./auth/store.js";
 import { ZaiOAuthClient, BigmodelOAuthClient, BigmodelPollOAuthClient, LOGIN_TIMEOUT_MS, parsePastedCallbackUrl, type OAuthResult } from "./auth/oauth.js";
 import { KeyResolver } from "./auth/resolver.js";
 import type { Credential } from "./auth/types.js";
@@ -383,6 +383,7 @@ export function createServeJobs(
   let resetPoller: { stop: () => void } | null = null;
   let marketingPoller: { stop: () => void } | null = null;
   let captchaModule: { shutdownCaptcha: () => void } | null = null;
+  let telemetryHeartbeat: { stop: () => void } | null = null;
   // The dynamic imports resolve asynchronously; the pending flags keep a
   // config reload racing the first start from double-starting a job.
   let claimPending = false;
@@ -390,6 +391,23 @@ export function createServeJobs(
   let resetPending = false;
   let marketingPending = false;
   let captchaPoolStarted = false;
+  const startTelemetryJob = (): void => {
+    stopTelemetryJob();
+    import("./telemetry/heartbeat.js")
+      .then((m) => {
+        telemetryHeartbeat = m.startTelemetryHeartbeat(config);
+        console.log(`${indent}telemetry: daily active heartbeat ON`);
+      })
+      .catch((err) => {
+        console.error(`[telemetry] heartbeat failed to start: ${(err as Error).message}`);
+      });
+  };
+  const stopTelemetryJob = (): void => {
+    if (!telemetryHeartbeat) return;
+    telemetryHeartbeat.stop();
+    telemetryHeartbeat = null;
+    console.log(`${indent}telemetry: daily active heartbeat OFF`);
+  };
 
   const startClaimJob = (): void => {
     stopClaimJob(); // restart-safe: a dirty claim block re-runs this with the new fields
@@ -499,6 +517,7 @@ export function createServeJobs(
       if (config.planAutoSwitch) startPlanWatcherJob();
       if (planAutoResetOf(config).enabled) startPlanResetJob();
       if (config.marketing?.enabled !== false) startMarketingJob();
+      startTelemetryJob();
     },
     handles: {
       claimRunning: () => claimScheduler !== null || claimPending,
@@ -533,6 +552,8 @@ export function createServeJobs(
       resetPoller = null;
       stopJob("marketing auto-claimer", marketingPoller);
       marketingPoller = null;
+      stopJob("telemetry heartbeat", telemetryHeartbeat);
+      telemetryHeartbeat = null;
       stopJob("auto-claim", claimScheduler);
       claimScheduler = null;
       if (captchaModule) {
@@ -862,7 +883,7 @@ export function ensureDeviceMidInConfig(path: string): string {
     if (value.length > 0) return value;
   }
 
-  const mid = randomUUID();
+  const mid = tryReadHostZCodeDeviceMid() ?? randomUUID();
   let updated: string;
   if (existing) {
     updated = raw.replace(deviceMidLine, `${existing[1]}deviceMid: "${mid}"`);
