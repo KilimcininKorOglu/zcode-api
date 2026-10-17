@@ -5,6 +5,7 @@ import {
   startTelemetryHeartbeat,
   getCalendarDateInTimezone,
   resetTelemetryStateForTest,
+  TELEMETRY_HEARTBEAT_INTERVAL_MS,
 } from "./heartbeat.js";
 import type { Credential } from "../auth/types.js";
 import type { ProxyConfig } from "../config/types.js";
@@ -106,5 +107,9 @@ describe("telemetry heartbeat", () => {
     await heartbeat.tick();
     expect(tickCount).toBeGreaterThanOrEqual(1);
     heartbeat.stop();
+  });
+
+  it("TELEMETRY_HEARTBEAT_INTERVAL_MS matches 15 minutes (900_000 ms)", () => {
+    expect(TELEMETRY_HEARTBEAT_INTERVAL_MS).toBe(15 * 60 * 1000);
   });
 });

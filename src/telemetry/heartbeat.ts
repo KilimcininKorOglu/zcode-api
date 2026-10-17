@@ -121,18 +121,20 @@ export async function sendTelemetryEvent(
   }
 }
 
+export const TELEMETRY_HEARTBEAT_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes, mirrors ZCode 3.15.1 dailyActiveHeartbeatIntervalMs (9e5)
+
 let lastReportedDailyActiveDate: string | null = null;
-let appLaunchReported = false;
+let lastReportedLaunchDate: string | null = null;
 
 /** Reset state for unit tests. */
 export function resetTelemetryStateForTest(): void {
   lastReportedDailyActiveDate = null;
-  appLaunchReported = false;
+  lastReportedLaunchDate = null;
 }
 
 /**
- * Ensure `app_launch` (on startup) and `app_daily_active` (for today) have
- * been submitted to ZCode's telemetry server.
+ * Ensure `app_launch` (on startup or each calendar day) and `app_daily_active`
+ * (for today) have been submitted to ZCode's telemetry server.
  */
 export async function ensureDailyActiveReported(
   cred: Credential | null,
@@ -144,10 +146,10 @@ export async function ensureDailyActiveReported(
   const timezone = resolveClientTimezone() ?? "Europe/Istanbul";
   const today = getCalendarDateInTimezone(timezone);
 
-  if (!appLaunchReported) {
+  if (lastReportedLaunchDate !== today) {
     const okLaunch = await sendTelemetryEvent("app_launch", cred, identity, fetchImpl);
     if (okLaunch) {
-      appLaunchReported = true;
+      lastReportedLaunchDate = today;
     }
   }
 
@@ -167,7 +169,7 @@ export async function ensureDailyActiveReported(
 
 /**
  * Start background heartbeat that keeps daily active status refreshed across
- * calendar day rollovers.
+ * calendar day rollovers. Runs every 15 minutes matching official desktop client.
  */
 export function startTelemetryHeartbeat(
   config: ProxyConfig,
@@ -190,11 +192,11 @@ export function startTelemetryHeartbeat(
   // Run initial heartbeat immediately
   tick().catch(() => {});
 
-  // Check every hour for date rollovers
+  // Check every 15 minutes for date rollovers and keep-alive
   timer = setInterval(() => {
     if (!running) return;
     tick().catch(() => {});
-  }, 3600_000);
+  }, TELEMETRY_HEARTBEAT_INTERVAL_MS);
 
   return {
     tick,

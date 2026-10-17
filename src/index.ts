@@ -396,7 +396,7 @@ export function createServeJobs(
     import("./telemetry/heartbeat.js")
       .then((m) => {
         telemetryHeartbeat = m.startTelemetryHeartbeat(config);
-        console.log(`${indent}telemetry: daily active heartbeat ON`);
+        console.log(`${indent}telemetry: daily active heartbeat ON (interval 15m)`);
       })
       .catch((err) => {
         console.error(`[telemetry] heartbeat failed to start: ${(err as Error).message}`);
