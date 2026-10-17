@@ -93,6 +93,11 @@ describe("telemetry heartbeat", () => {
     const okSecond = await ensureDailyActiveReported(DUMMY_CRED, DUMMY_CONFIG.identity, mockFetch);
     expect(okSecond).toBe(true);
     expect(eventsSent).toHaveLength(2);
+
+    // With forceLaunch = true (e.g. before reset opportunity check), app_launch is resent
+    const okForced = await ensureDailyActiveReported(DUMMY_CRED, DUMMY_CONFIG.identity, mockFetch, true);
+    expect(okForced).toBe(true);
+    expect(eventsSent).toEqual(["app_launch", "app_daily_active", "app_launch"]);
   });
 
   it("startTelemetryHeartbeat ticks initially and can be stopped", async () => {

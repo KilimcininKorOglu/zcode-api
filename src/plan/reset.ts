@@ -152,7 +152,7 @@ export async function requestPlanResetOpportunity(
   const cred = await loadCredentialImpl().catch(() => null);
   const cfg = config ?? activeConfig;
   if (cred && cfg?.identity) {
-    await ensureDailyActiveReported(cred, cfg.identity, fetchImpl).catch(() => false);
+    await ensureDailyActiveReported(cred, cfg.identity, fetchImpl, true).catch(() => false);
   }
   const headers = resetHeaders(cred ?? null, cfg ?? undefined);
   if (!headers) return null;

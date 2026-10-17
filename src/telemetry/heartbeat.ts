@@ -133,38 +133,39 @@ export function resetTelemetryStateForTest(): void {
 }
 
 /**
- * Ensure `app_launch` (on startup or each calendar day) and `app_daily_active`
+ * Ensure `app_launch` (on startup, each calendar day, or forced) and `app_daily_active`
  * (for today) have been submitted to ZCode's telemetry server.
  */
 export async function ensureDailyActiveReported(
   cred: Credential | null,
   identity: ProxyIdentity,
   fetchImpl: typeof fetch = fetch,
+  forceLaunch = false,
 ): Promise<boolean> {
   if (!cred?.jwt) return false;
 
   const timezone = resolveClientTimezone() ?? "Europe/Istanbul";
   const today = getCalendarDateInTimezone(timezone);
 
-  if (lastReportedLaunchDate !== today) {
+  if (forceLaunch || lastReportedLaunchDate !== today) {
     const okLaunch = await sendTelemetryEvent("app_launch", cred, identity, fetchImpl);
     if (okLaunch) {
       lastReportedLaunchDate = today;
+      if (forceLaunch) {
+        console.log("[telemetry] refreshed app_launch heartbeat for opportunity check");
+      }
     }
   }
 
-  if (lastReportedDailyActiveDate === today) {
-    return true;
+  if (lastReportedDailyActiveDate !== today) {
+    const okDaily = await sendTelemetryEvent("app_daily_active", cred, identity, fetchImpl);
+    if (okDaily) {
+      lastReportedDailyActiveDate = today;
+      console.log(`[telemetry] reported daily active status for ${today}`);
+    }
   }
 
-  const okDaily = await sendTelemetryEvent("app_daily_active", cred, identity, fetchImpl);
-  if (okDaily) {
-    lastReportedDailyActiveDate = today;
-    console.log(`[telemetry] reported daily active status for ${today}`);
-    return true;
-  }
-
-  return false;
+  return true;
 }
 
 /**
