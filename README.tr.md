@@ -39,7 +39,7 @@ Evet, hepsi bu; gerçekten bu kadar basit.
 
 Açtığınızda terminal kontrol paneline girersiniz (asıl arayüz budur):
 
-<img src="docs/images/tui-annotated.png" alt="ZCode Proxy terminal kontrol paneli" width="980" />
+<img src="docs/images/tui-raw.png" alt="ZCode Proxy terminal kontrol paneli" width="980" />
 
 Panelde dört kart vardır: **Login & settings** (provider / plan / login), **Plan usage** (kalan oranı çubuğu + reset geri sayımı, <kbd>r</kbd> ya da Refresh tıklaması), **Proxy service** (başlat/durdur / güncel config), **Logs** (istek başına bir satır, canlı akar; her satır hangi planın servis ettiğini ve `13.0s` / `1m0s` gibi okunabilir süreleri gösterir). Proxy'yi başlatmak için <kbd>s</kbd>ye basın; `Status: running` gördüğünüzde hazırsınız.
 

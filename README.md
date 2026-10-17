@@ -39,7 +39,7 @@ Yes, that is all — it really is that simple.
 
 After launch you enter the terminal control panel (this is the main UI):
 
-<img src="docs/images/tui-annotated.png" alt="ZCode Proxy terminal control panel" width="980" />
+<img src="docs/images/tui-raw.png" alt="ZCode Proxy terminal control panel" width="980" />
 
 The panel has four cards: **Login & settings** (provider / plan / login), **Plan usage** (remaining-ratio bar + reset countdown, press <kbd>r</kbd> or click Refresh), **Proxy service** (start/stop / current config), **Logs** (one line per request, live scrolling; each row shows the serving plan and human-readable durations such as `13.0s` / `1m0s`). Press <kbd>s</kbd> to start the proxy; once you see `Status: running` you are ready.
 
