@@ -260,6 +260,63 @@ describe("maybeUsePlanResetAndRetry", () => {
     expect(outcome.handled).toBe(false);
   });
 
+  it("notes when the server spares the earliest right and burns a longer-lived one", async () => {
+    const earliest = Date.now() + 3600_000;
+    const latest = Date.now() + 61 * 86_400_000;
+    __setResetRightsForTests([latest, earliest]);
+    // /use succeeds, then the post-spend status still lists the earliest
+    // right — the server consumed the longer-lived one.
+    const { fetch } = mockFetch((url) =>
+      new Response(url.includes("/reset/use") ? '{"code":0,"msg":"success"}' : JSON.stringify({ code: 0, data: { available_five_hour_resets: [{ expire_at: earliest }] } })),
+    );
+    __setPlanResetDepsForTests({ fetchImpl: fetch, loadCredentialImpl: async () => cred("jwt-1") });
+    const lines: string[] = [];
+    const origLog = console.log;
+    console.log = (...a: unknown[]) => lines.push(a.join(" "));
+    try {
+      const outcome = await maybeUsePlanResetAndRetry({
+        plan: "coding-plan",
+        config: makeConfig(),
+        rejectionBody: '{"error":{"type":"rate_limit_error"}}',
+        rebuildAndDispatch: async () => new Response("ok"),
+      });
+      expect(outcome.handled).toBe(true);
+    } finally {
+      console.log = origLog;
+    }
+    expect(lines.some((l) => l.includes("NOTE server spent the longer-lived right"))).toBe(true);
+    expect(lines.some((l) => l.includes("expires in 61d"))).toBe(true);
+    // The cache reflects the post-spend truth.
+    expect(cachedResetRights()).toEqual([earliest]);
+  });
+
+  it("stays silent when the earliest right is the one spent", async () => {
+    const earliest = Date.now() + 3600_000;
+    const latest = Date.now() + 61 * 86_400_000;
+    __setResetRightsForTests([latest, earliest]);
+    // After the spend only the longer-lived right remains.
+    const { fetch } = mockFetch((url) =>
+      new Response(url.includes("/reset/use") ? '{"code":0,"msg":"success"}' : JSON.stringify({ code: 0, data: { available_five_hour_resets: [{ expire_at: latest }] } })),
+    );
+    __setPlanResetDepsForTests({ fetchImpl: fetch, loadCredentialImpl: async () => cred("jwt-1") });
+    const lines: string[] = [];
+    const origLog = console.log;
+    console.log = (...a: unknown[]) => lines.push(a.join(" "));
+    try {
+      const outcome = await maybeUsePlanResetAndRetry({
+        plan: "coding-plan",
+        config: makeConfig(),
+        rejectionBody: '{"error":{"type":"rate_limit_error"}}',
+        rebuildAndDispatch: async () => new Response("ok"),
+      });
+      expect(outcome.handled).toBe(true);
+    } finally {
+      console.log = origLog;
+    }
+    expect(lines.some((l) => l.includes("NOTE server spent the longer-lived right"))).toBe(false);
+    expect(cachedResetRights()).toEqual([latest]);
+  });
+
   it("skips the 429 trigger when useOn429 is off", async () => {
     __setResetRightsForTests([Date.now() + 3600_000]);
     let rebuilt = 0;

@@ -266,6 +266,32 @@ export async function usePlanReset(
 
 let useInFlight: Promise<boolean> | null = null;
 
+/**
+ * Spend a right and verify WHICH one went. /use cannot name a right — the
+ * server picks — so a post-spend status re-read answers it: with several
+ * rights held, the earliest-expiring one should be consumed first; if it is
+ * still held after the spend, the server burned a longer-lived right and the
+ * mismatch is surfaced as a NOTE line. The rights cache is refreshed from the
+ * re-read so the next trigger decision sees the post-spend truth immediately
+ * instead of waiting for the next poll.
+ */
+async function spendResetAndVerify(config?: ProxyConfig): Promise<boolean> {
+  const before = [...cachedFiveHourResets];
+  const ok = await usePlanReset(undefined, undefined, config);
+  if (!ok) return false;
+  const after = await fetchPlanResetStatus(undefined, undefined, config);
+  if (after !== null) cachedFiveHourResets = after;
+  if (after !== null && before.length > 1) {
+    const earliest = Math.min(...before);
+    if (after.includes(earliest)) {
+      const spentLife = fmtDuration(Math.max(...before) - Date.now());
+      const earliestLife = fmtDuration(earliest - Date.now());
+      console.log(`plan reset: NOTE server spent the longer-lived right (expires in ${spentLife}) while the earliest one (expires in ${earliestLife}) is still held`);
+    }
+  }
+  return true;
+}
+
 async function spendReset(
   fetchImpl: typeof fetch,
   loadCredentialImpl: typeof loadCredential,
@@ -315,7 +341,7 @@ export async function maybeUseResetOnTick(config: ProxyConfig, percentUsed: numb
   const cfg = planAutoResetOf(config);
   if (!cfg.enabled || cachedFiveHourResets.length === 0) return;
   if (!shouldUseReset(percentUsed, cachedFiveHourResets, cfg, Date.now())) return;
-  const ok = await usePlanReset(undefined, undefined, config);
+  const ok = await spendResetAndVerify(config);
   if (ok) {
     console.log(`plan reset: used FIVE_HOUR reset right (5h window ${percentUsed === null ? "unknown" : `%${percentUsed}`} used) — window re-opened`);
   }
@@ -367,7 +393,7 @@ export async function maybeUsePlanResetAndRetry(args: {
   if (!cfg.enabled || args.plan !== "coding-plan" || cachedFiveHourResets.length === 0) return { handled: false };
   if (!cfg.useOn429) return { handled: false };
   if (isTransient429(args.rejectionBody ?? null)) return { handled: false };
-  const ok = await usePlanReset(undefined, undefined, args.config);
+  const ok = await spendResetAndVerify(args.config);
   if (!ok) return { handled: false };
   console.log("plan reset: used FIVE_HOUR reset right on a coding-plan 429 — window re-opened, retrying the request");
   const resp = await args.rebuildAndDispatch(args.plan);
