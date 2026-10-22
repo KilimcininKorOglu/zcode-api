@@ -295,6 +295,26 @@ describe("startPlanResetPoller", () => {
     expect(granted).toHaveLength(1);
   });
 
+  it("renders long expiry in days, not raw hours", async () => {
+    const far = JSON.stringify({
+      code: 0,
+      data: { available_five_hour_resets: [{ expire_at: Date.now() + 61 * 86_400_000 + 40 * 60_000 }] },
+    });
+    const { fetch } = mockFetch(() => new Response(far));
+    const lines: string[] = [];
+    const origLog = console.log;
+    console.log = (...a: unknown[]) => lines.push(a.join(" "));
+    try {
+      const poller = startPlanResetPoller(makeConfig(), { fetchImpl: fetch, loadCredentialImpl: async () => cred("jwt-1") });
+      await poller.tick();
+      poller.stop();
+    } finally {
+      console.log = origLog;
+    }
+    expect(lines.some((l) => l.includes("expires in 61d"))).toBe(true);
+    expect(lines.some((l) => l.includes("1464h"))).toBe(false);
+  });
+
   it("clears the cache to empty when the server reports no rights", async () => {
     __setResetRightsForTests([Date.now() + 3600_000]);
     const { fetch } = mockFetch(() => new Response('{"code":0,"data":{"available_five_hour_resets":[]}}'));

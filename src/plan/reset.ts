@@ -374,12 +374,15 @@ export async function maybeUsePlanResetAndRetry(args: {
   return { handled: true, resp };
 }
 
-/** `8m` / `2h 13m` — the small duration formatter for reset log lines. */
+/** `8m` / `2h 13m` / `61d 0h` — the small duration formatter for reset log lines. */
 function fmtDuration(ms: number): string {
   const totalMin = Math.max(0, Math.round(ms / 60_000));
-  const h = Math.floor(totalMin / 60);
+  const d = Math.floor(totalMin / 1440);
+  const h = Math.floor((totalMin % 1440) / 60);
   const m = totalMin % 60;
-  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+  if (d > 0) return h > 0 ? `${d}d ${h}h` : `${d}d`;
+  if (h > 0) return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  return `${m}m`;
 }
 
 export interface PlanResetPoller {
