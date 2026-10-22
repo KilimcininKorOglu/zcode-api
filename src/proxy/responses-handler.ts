@@ -228,8 +228,9 @@ export async function handleResponses(
   const routing = opts.endpointRouting !== undefined ? opts.endpointRouting : getDefaultEndpointRouting(opts.config);
   const signer = opts.clientSigning !== undefined ? opts.clientSigning : getDefaultClientSigning(opts.config);
   const dispatch = async (pairs: UpstreamHeaderPair[]): Promise<Response> => {
-    const routed = routing ? await routing.resolve(upstreamReq.url, credentialString(cred)) : null;
+    const routed = routing ? await routing.resolve(upstreamReq.url, credentialString(cred), cred.jwt) : null;
     const sendUrl = routed?.routed ? routed.url : upstreamReq.url;
+    const routingHeaderPairs = routed?.headers ? (Object.entries(routed.headers) as UpstreamHeaderPair[]) : undefined;
     if (debug && routed?.routed) console.log(`[responses] endpoint routing: ${upstreamReq.url} -> ${sendUrl}`);
     // signing decisions run against the PRE-routing provider URL (mirrors the
     // client, whose signer wraps the routing transport). A gateway 502/504 is
@@ -246,12 +247,15 @@ export async function handleResponses(
           appVersion: opts.config.identity.appVersion,
           debug: debug ? (message) => console.log(`[responses] ${message}`) : undefined,
           send: (finalPairs) => {
+            // 3.16.2 X-ZCode-Authorization lands AFTER the signature block
+            // (the client's routing wrapper sits inside the signing wrapper).
+            const outboundPairs = routingHeaderPairs ? [...finalPairs, ...routingHeaderPairs] : finalPairs;
             const req = new Request(sendUrl, {
               method: "POST",
-              headers: Object.fromEntries(finalPairs),
+              headers: Object.fromEntries(outboundPairs),
               body: transformedBody ?? undefined,
             });
-            return fetchImpl(req, { method: "POST", headers: Object.fromEntries(finalPairs), body: transformedBody ?? undefined, signal: clientReq.signal });
+            return fetchImpl(req, { method: "POST", headers: Object.fromEntries(outboundPairs), body: transformedBody ?? undefined, signal: clientReq.signal });
           },
         }),
       {

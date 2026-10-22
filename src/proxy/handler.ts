@@ -281,10 +281,12 @@ export async function proxyRequest(
   }
   const dispatch = async (req: Request, pairs: UpstreamHeaderPair[]): Promise<Response> => {
     let sendUrl = req.url;
+    let routingHeaderPairs: UpstreamHeaderPair[] | undefined;
     if (routing) {
-      const routed = await routing.resolve(req.url, credentialString(cred));
+      const routed = await routing.resolve(req.url, credentialString(cred), cred.jwt);
       if (routed.routed) {
         sendUrl = routed.url;
+        routingHeaderPairs = routed.headers ? (Object.entries(routed.headers) as UpstreamHeaderPair[]) : undefined;
         if (debug) debugLine(reqId, `endpoint routing: ${req.url} -> ${routed.url}`);
       }
     }
@@ -305,6 +307,10 @@ export async function proxyRequest(
           appVersion: config.identity.appVersion,
           debug: debug ? (message) => debugLine(reqId, message) : undefined,
           send: (finalPairs) => {
+            // 3.16.2 X-ZCode-Authorization: the client appends it inside its
+            // routing wrapper, which sits INSIDE the signing wrapper — so on the
+            // wire it lands after the signature block, as the very last header.
+            const outboundPairs = routingHeaderPairs ? [...finalPairs, ...routingHeaderPairs] : finalPairs;
             if (dumpEnabled()) {
               // The pre-built `upstream_out` line shows the pre-routing URL and
               // pre-signing header set; this line captures what actually went on
@@ -312,18 +318,18 @@ export async function proxyRequest(
               // otherwise and misled a 2026-09-18 debugging session.
               dumpPhase(reqId, "wire_out", {
                 url: sendUrl,
-                signed: finalPairs.some(([k]) => k.toLowerCase() === "x-client-sig"),
-                headers: dumpHeaders(new Headers(Object.fromEntries(finalPairs))),
+                signed: outboundPairs.some(([k]) => k.toLowerCase() === "x-client-sig"),
+                headers: dumpHeaders(new Headers(Object.fromEntries(outboundPairs))),
               });
             }
             // Always a FRESH Request: a reused one has its body stream marked
             // used after the first fetch, which would break the gateway retry.
             const sendReq = new Request(sendUrl, {
               method: req.method,
-              headers: Object.fromEntries(finalPairs),
+              headers: Object.fromEntries(outboundPairs),
               body: transformedBody ?? undefined,
             });
-            return sendUpstreamRequest(sendReq, finalPairs, transformedBody, translateMode, useOrderedTransport, fetchImpl, clientReq.signal, hasCustomFetchImpl);
+            return sendUpstreamRequest(sendReq, outboundPairs, transformedBody, translateMode, useOrderedTransport, fetchImpl, clientReq.signal, hasCustomFetchImpl);
           },
         }),
       {
