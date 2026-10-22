@@ -51,7 +51,8 @@ const DEFAULTS = {
   PLAN_PRIORITY: DEFAULT_PLAN_PRIORITY,
   PLAN_POLL_INTERVAL_SEC: DEFAULT_PLAN_POLL_INTERVAL_SEC,
   BATCH_AS_STREAM: true,
-  DEFAULT_MODEL: "glm-4.6",
+  DEFAULT_MODEL: "glm-5.3",
+  MODELS: ["glm-5.3", "glm-5.3-flash"],
   LOG_LEVEL: "info" as const,
   ZAI_ANTHROPIC_BASE: "https://api.z.ai/api/anthropic",
   ZAI_OPENAI_BASE: "https://api.z.ai/api/coding/paas/v4",
@@ -150,7 +151,7 @@ export function loadConfig(path: string): ProxyConfig {
 
   // --- models ---
   const defaultModel = typeof parsed?.defaultModel === "string" ? parsed.defaultModel : DEFAULTS.DEFAULT_MODEL;
-  const models = Array.isArray(parsed?.models) ? parsed.models : [defaultModel];
+  const models = Array.isArray(parsed?.models) ? parsed.models : [...DEFAULTS.MODELS];
 
   // --- logging ---
   const logLevel = resolveLogLevel(parsed?.logging?.level);
