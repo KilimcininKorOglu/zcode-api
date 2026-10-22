@@ -210,7 +210,7 @@ Config dosyası proje kökündeki `config.yaml`dır (ilk açılışta otomatik o
 | `ZCODE_PLAN_AUTO_RESET`         | on               | `planAutoReset`i kapatmak için `off`/`false`: 5 saatlik pencere reset haklarının otomatik kullanımı (eşik / expire / 429 tetikleri) |
 | `ZCODE_BATCH_AS_STREAM`         | on               | `batchAsStream`ı kapatmak için `0`/`false`: batch (stream olmayan) istekler upstream'e stream olarak gider ve tek JSON'a birleştirilir; çünkü upstream gateway ~180 saniyeyi aşan sessiz non-streaming istekleri öldürür (belirti: tam ~3 dakika sonra 502) |
 | `ZCODE_PROXY_CONFIG`            | `config.yaml`    | Config dosyası yolu                                                                                                              |
-| `ZCODE_PROXY_CREDENTIAL_SECRET` | makineye özel    | Login credential'larının şifreleme seed'i (makine taşımada / Docker'da sabitleyin)                                               |
+| `ZCODE_PROXY_CREDENTIAL_SECRET` | makineye özel    | Login credential'larının şifreleme seed'i (makine taşımada / Docker'da sabitleyin; compose gitignored `.env`den okur, bkz. `.env.example`) |
 | `ZCODE_LOG_FORMAT`              | desktop table    | Tek satırlık loglar için `compact` (dar ekranlar)                                                                                |
 | `ZCODE_PANEL_ENABLED`           | off              | Headless `serve` modunun (Docker dahil) da yerel web panel başlatması için `1`/`true`                                            |
 | `ZCODE_PANEL_TOKEN`             | yok              | Panel erişim tokenı, **panel açıkken zorunlu** (token olmadan panel açılmayı reddeder; kontrol API'sinin açıkta kalmaması için) |
@@ -301,19 +301,14 @@ Ve `http://127.0.0.1:8090` adresini açın. Host modunda ana proxy portu da host
 
 ## 🧮 Kullanılabilir modeller
 
-Proxy `/v1/models` altında bu modelleri listeler (liste temsilidir; diğer model adları olduğu gibi iletilir):
+Proxy `/v1/models` altında bu modelleri listeler (liste temsilidir; başka model adları olduğu gibi iletilir, whitelist yoktur):
 
-| Model                       | Context | Maks çıktı |
-|-----------------------------|---------|------------|
-| `glm-4.5-air`               | 131K    | 96K        |
-| `glm-4.6`                   | 200K    | 131K       |
-| `glm-4.6v` (vision)         | 131K    | 32K        |
-| `glm-4.7`                   | 200K    | 131K       |
-| `glm-5` / `glm-5-turbo`     | 200K    | 64K        |
-| `glm-5v-turbo` (vision)     | 200K    | 131K       |
-| `glm-5.1`                   | 200K    | 64K        |
-| `glm-5.2`                   | 1M      | 128K       |
-| `glm-5.3` / `glm-5.3-flash` | 1M      | 128K       |
+| Model                       | Context | Maks çıktı | Girdi        |
+|-----------------------------|---------|------------|--------------|
+| `glm-5.3`                   | 1M      | 128K       | metin        |
+| `glm-5.3-flash`             | 1M      | 128K       | metin + görsel |
+
+Eski nesil GLM modelleri (`glm-4.5-air` … `glm-5.2`) katalogda tutulur ve istenirse yine iletilir; yalnız reklam listesinde görünmezler.
 
 ## ❓ SSS
 

@@ -209,7 +209,7 @@ The config file is `config.yaml` in the project root (auto-generated on first la
 | `ZCODE_PLAN_AUTO_RESET`         | on               | Set to `off`/`false` to disable `planAutoReset`: the automatic use of the 5h-window reset rights (threshold / expire / 429 triggers) |
 | `ZCODE_BATCH_AS_STREAM`         | on               | Set to `0`/`false` to disable `batchAsStream`: batch (non-streaming) requests are sent upstream as streams and reassembled into one JSON, because the upstream gateway kills silent non-streaming requests past ~180s (symptom: 502 after exactly ~3 minutes) |
 | `ZCODE_PROXY_CONFIG`            | `config.yaml`    | Config file path                                                                                                                 |
-| `ZCODE_PROXY_CREDENTIAL_SECRET` | machine-specific | Encryption seed for login credentials (pin it for cross-machine moves / Docker)                                                  |
+| `ZCODE_PROXY_CREDENTIAL_SECRET` | machine-specific | Encryption seed for login credentials (pin it for cross-machine moves / Docker; compose reads it from the gitignored `.env`, see `.env.example`) |
 | `ZCODE_LOG_FORMAT`              | desktop table    | Set to `compact` for single-line logs (narrow screens)                                                                           |
 | `ZCODE_PANEL_ENABLED`           | off              | Set to `1`/`true` so headless `serve` mode (incl. Docker) also starts a local web panel                                          |
 | `ZCODE_PANEL_TOKEN`             | none             | Panel access token, **required when the panel is enabled** (panel refuses to start without one, to avoid an exposed control API) |
@@ -300,19 +300,14 @@ Then open `http://127.0.0.1:8090`. In host mode the main proxy port also occupie
 
 ## 🧮 Available models
 
-The proxy lists these models on `/v1/models` (the list is presentational only — other model names are forwarded as-is):
+The proxy lists these models on `/v1/models` (the list is presentational only — other model names are forwarded as-is, there is no whitelist):
 
-| Model                       | Context | Max output |
-|-----------------------------|---------|------------|
-| `glm-4.5-air`               | 131K    | 96K        |
-| `glm-4.6`                   | 200K    | 131K       |
-| `glm-4.6v` (vision)         | 131K    | 32K        |
-| `glm-4.7`                   | 200K    | 131K       |
-| `glm-5` / `glm-5-turbo`     | 200K    | 64K        |
-| `glm-5v-turbo` (vision)     | 200K    | 131K       |
-| `glm-5.1`                   | 200K    | 64K        |
-| `glm-5.2`                   | 1M      | 128K       |
-| `glm-5.3` / `glm-5.3-flash` | 1M      | 128K       |
+| Model           | Context | Max output | Input       |
+|-----------------|---------|------------|-------------|
+| `glm-5.3`       | 1M      | 128K       | text        |
+| `glm-5.3-flash` | 1M      | 128K       | text + image |
+
+The older GLM generations (`glm-4.5-air` … `glm-5.2`) stay in the internal catalog and still forward when requested; they are simply not advertised.
 
 ## ❓ FAQ
 
