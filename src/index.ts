@@ -35,7 +35,7 @@ import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { ensureNodeFetchNoTimeouts } from "./runtime/node-fetch-compat.js";
 
-export const VERSION = "4.10.8";
+export const VERSION = "4.11.0";
 
 if (require.main === module) main();
 
