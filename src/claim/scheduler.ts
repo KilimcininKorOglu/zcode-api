@@ -37,7 +37,7 @@ export interface ClaimSchedulerDeps {
    * 3.16.3 `configs.captcha` gate. Absent → captcha always required (the
    * pre-3.16.3 wire). A throwing gate also fails open to "required".
    */
-  captchaRequired?(): Promise<boolean>;
+  captchaRequired?(): Promise<boolean> | boolean;
   config: ClaimSchedulerConfig;
   log?: (message: string) => void;
   now?: () => number;

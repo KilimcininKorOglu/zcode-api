@@ -238,6 +238,14 @@ describe("ClaimScheduler — 3.16.3 configs.captcha gate", () => {
     expect(h.claimCalls).toEqual([{ planId: "weekend-1", captcha: undefined }]);
   });
 
+  it("accepts a synchronous gate (boolean return, no promise)", async () => {
+    const { h, scheduler } = gateHarness(() => false);
+    const result = await scheduler.tick();
+    expect(result.action).toBe("claimed");
+    expect(h.captchaCalls).toBe(0);
+    expect(h.claimCalls).toEqual([{ planId: "weekend-1", captcha: undefined }]);
+  });
+
   it("fails open — a throwing gate keeps the pre-3.16.3 wire (solve + captcha headers)", async () => {
     const { h, scheduler } = gateHarness(() => {
       throw new Error("config fetch exploded");
