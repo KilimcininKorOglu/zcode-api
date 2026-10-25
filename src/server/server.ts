@@ -17,7 +17,7 @@ import { handleChatCompletions, handleListModels } from "./routes-openai.js";
 import { handleMessages } from "./routes-anthropic.js";
 import { handleResponsesRoute } from "./routes-responses.js";
 import { handleAsyncMessagesRoute, handleAsyncChatRoute, handleAsyncHealthRoute } from "./routes-async.js";
-import { handleMcpListingRoute, handleMcpRelayRoute, type McpRouteOptions } from "./routes-mcp.js";
+import { handleMcpRoute, type McpRouteOptions } from "./routes-mcp.js";
 import { handleQuota } from "./routes-quota.js";
 import { errorResponse } from "../proxy/handler.js";
 import type { ResponseStore } from "../responses/store.js";
@@ -137,24 +137,11 @@ export function createFetchHandler(opts: ServerOptions): (req: Request) => Promi
     }
 
     if (config.mcp.gateway.enabled) {
-      if (path === "/mcp" && method === "GET") {
-        return handleMcpListingRoute(req, mcpOpts);
-      }
-      // MCP streamable HTTP: POST (JSON-RPC), GET (SSE stream), DELETE
-      // (session close). `/mcp` itself only supports GET above.
-      if (
-        path.startsWith("/mcp/") &&
-        (method === "POST" || method === "GET" || method === "DELETE")
-      ) {
-        let serverKey = path.slice("/mcp/".length);
-        try {
-          serverKey = decodeURIComponent(serverKey);
-        } catch {
-          // Malformed percent-escape (e.g. /mcp/%zz): decodeURIComponent throws
-          // URIError; the raw string can never match a catalogue key, so let
-          // the handler's lookup produce the 404 instead of a 500 here.
-        }
-        return handleMcpRelayRoute(req, serverKey, mcpOpts);
+      // Aggregated MCP endpoint: ONE `/mcp` URL exposes every official
+      // plugin's tools (streamable HTTP — POST JSON-RPC, GET listing,
+      // DELETE session close). Replaces the per-plugin `/mcp/{key}` relay.
+      if (path === "/mcp" && (method === "POST" || method === "GET" || method === "DELETE")) {
+        return handleMcpRoute(req, mcpOpts);
       }
     }
 
@@ -192,10 +179,10 @@ export function startServer(opts: ServerOptions): Promise<ProxyServer> {
     // `/async/*` routes can hold the connection open for minutes-to-hours while
     // waiting for an off-peak ticket. Lift the per-request socket timeout from
     // the default 600s (set below via server.requestTimeout) to 24h so the long
-    // queue wait + LLM stream doesn't get killed mid-flight. `/mcp/*` GET SSE
-    // streams are equally long-lived. Other routes keep the default timeout.
+    // queue wait + LLM stream doesn't get killed mid-flight. Other routes keep
+    // the default timeout.
     const pathForTimeout = req.url ?? "";
-    if (pathForTimeout.startsWith("/async/") || pathForTimeout.startsWith("/mcp/")) {
+    if (pathForTimeout.startsWith("/async/")) {
       req.setTimeout(24 * 60 * 60 * 1000);
     }
 
@@ -354,7 +341,7 @@ function addCorsHeaders(resp: Response, cors: Record<string, string>): Response 
 /**
  * CORS headers are emitted ONLY when `auth.proxyApiKey` is set.
  *
- * Rationale: the /mcp relay (and /v1/*) inject the operator's real OAuth
+ * Rationale: the /mcp endpoint (and /v1/*) inject the operator's real OAuth
  * credentials upstream; with `access-control-allow-origin: *` on a keyless
  * deployment, any webpage in a logged-in user's browser could pass preflight
  * and drive those routes cross-origin (MCP JSON POSTs are preflighted, so

@@ -28,7 +28,7 @@ so Claude Code, Codex, Silly Tavern ... can all use your plan quota directly.
 - 💬 **Built-in web chat** —— open `/webui` for a local ChatGPT-style chat page to test models quickly.
 - 🌙 **Idle channel & instant plan claiming** (optional) —— a free off-peak compute channel plus automatic claiming of limited trial plans, both built in.
 - 🔀 **Hybrid plan auto-switch** (optional) —— holding both a trial start-plan and a personal coding-plan? Pick the serving order yourself with `planPriority`: spend the expiring trial credits first, or keep the coding plan primary and drop to the trial when its 5-hour / weekly window empties (`planAutoSwitch`).
-- 🔌 **In-plan MCP relay** —— relays ZCode official plugin MCPs (Tianyancha / Wind / Tonghuashun iFinD ...) to local `/mcp/*` (requires coding-plan login, `GET /mcp` lists them); the built-in web chat can also attach your own MCP servers as model tools.
+- 🔌 **In-plan MCP aggregate endpoint** — official ZCode plugin MCPs (Tianyancha / Wind / Tonghuashun iFinD ..., 130+ tools) are merged behind a **single** `/mcp` endpoint (streamable HTTP, tools namespaced `{plugin}__{tool}` — clients configure just one MCP server; requires a coding-plan login, `GET /mcp` in a browser shows the catalogue); the built-in web chat can also attach your own MCP servers as model tools.
 - 🪟 **All platforms** —— Windows / macOS / Linux from one codebase; also compiles to a single-file binary or Docker deployment.
 
 ## 🚀 One-minute quickstart

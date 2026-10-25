@@ -139,7 +139,7 @@ responses:
 # These keys are parsed but have no effect: hosted tools (`mcp`,
 # `web_search_preview`, ...) are silently stripped by the Responses
 # translator. The GLM open-platform MCP client that once consumed these
-# keys has been removed — src/mcp now only hosts the plugin gateway relay
+# keys has been removed — src/mcp now only hosts the aggregated /mcp gateway
 # documented below.
 mcp:
   enabled: true
@@ -150,17 +150,20 @@ mcp:
   webReader: false
   # (planned) Inject the three `zread` tools (search_doc/get_repo_structure/read_file).
   zread: false
-  # Official plugin-MCP gateway relay (Tianyancha / Wind / Tonghuashun iFinD ...).
-  # GET /mcp lists the served endpoints; /mcp/{server} relays MCP streamable
-  # HTTP to Z.AI's official gateway with your OAuth login injected — inbound
-  # callers authenticate with the same proxyApiKey as the LLM routes.
+  # Aggregated official plugin-MCP gateway (Tianyancha / Wind / Tonghuashun iFinD ...).
+  # ONE `/mcp` endpoint exposes every plugin's tools (streamable HTTP): POST
+  # JSON-RPC (initialize / tools/list / tools/call), GET listing, DELETE session
+  # close. Tool names are `{plugin}__{tool}`; unavailable plugins are reported
+  # in `tools/list` -> `result._meta.unavailable`. Upstream calls carry your
+  # OAuth login injected — inbound callers authenticate with the same
+  # proxyApiKey as the LLM routes.
   # Requires a coding-plan credential: the upstream gateway rejects
   # identity-only auth (JSON-RPC 3101), so start-plan requests fail with 400
   # `mcp_plan_unsupported`.
   # The server table ships with the build (scripts/regen-mcp-catalogue.ts).
   # Note: `mcp.enabled` above is parsed but gates nothing since the GLM
-  # hosted-tool client was removed — this relay is controlled independently
-  # by `gateway.enabled`. Since the relay spends your paid data entitlements,
+  # hosted-tool client was removed — this gateway is controlled independently
+  # by `gateway.enabled`. Since it spends your paid data entitlements,
   # setting auth.proxyApiKey is strongly recommended (CORS headers are only
   # emitted when a key is set).
   # Env overrides: ZCODE_MCP_GATEWAY, ZCODE_MCP_GATEWAY_ORIGIN.

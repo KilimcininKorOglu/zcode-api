@@ -17,6 +17,7 @@
  * its startup cost.
  */
 import type * as CaptchaExports from "./captcha.js";
+import { envMs } from "../config/env.js";
 
 /** Shape the callers pass in — satisfied by the real captcha module or test fakes. */
 export type CaptchaModuleLike = Pick<typeof CaptchaExports, "detectCaptchaChallenge" | "getCaptchaToken" | "RETRY_HEADERS">
@@ -39,8 +40,7 @@ const MAX_SNIFF_INFLATED_BYTES = 256 * 1024;
  * an instantly-throwing solver, hot-spinning) loop.
  */
 export function resolveCaptchaAcquireBudgetMs(raw: string | undefined): number {
-  const parsed = Number(raw ?? "");
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 45_000;
+  return envMs(raw, 45_000);
 }
 
 /**

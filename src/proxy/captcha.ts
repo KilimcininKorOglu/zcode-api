@@ -26,6 +26,7 @@ import {
 } from "./captcha-pool.js";
 import { buildIdentityHeaders, normalizePrintableHeaderValue } from "./identity.js";
 import type { ProxyIdentity } from "../config/types.js";
+import { envMs } from "../config/env.js";
 
 const CAPTCHA_HEADER = "x-aliyun-captcha-verify-param";
 const REGION_HEADER = "x-aliyun-captcha-verify-region";
@@ -158,14 +159,12 @@ async function fetchCaptchaConfig(appVersion: string, identity?: ProxyIdentity):
 
 /** Timed-request budget — mirror `Js = 15e3`. Override: CAPTCHA_CONFIG_TIMEOUT_MS. */
 function configTimeoutMs(): number {
-  const raw = Number(process.env.CAPTCHA_CONFIG_TIMEOUT_MS || 15_000);
-  return Number.isFinite(raw) && raw > 0 ? raw : 15_000;
+  return envMs(process.env.CAPTCHA_CONFIG_TIMEOUT_MS, 15_000);
 }
 
 /** Snapshot TTL — mirror `RRe = 3600*1e3`. Override: CAPTCHA_CONFIG_TTL_MS. */
 function captchaConfigTtlMs(): number {
-  const raw = Number(process.env.CAPTCHA_CONFIG_TTL_MS || 3_600_000);
-  return Number.isFinite(raw) && raw > 0 ? raw : 3_600_000;
+  return envMs(process.env.CAPTCHA_CONFIG_TTL_MS, 3_600_000);
 }
 
 /**
