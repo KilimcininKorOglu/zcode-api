@@ -18,7 +18,8 @@ import { ClaimPreviewError } from "./client.js";
 
 interface ClaimGateway {
   getPreviews(): Promise<ClaimablePlan[]>;
-  claim(planId: string, captcha: { verifyParam: string; region?: string }): Promise<ClaimOutcome>;
+  /** `captcha` omitted → claim without captcha headers (3.16.3 switch off). */
+  claim(planId: string, captcha?: { verifyParam: string; region?: string }): Promise<ClaimOutcome>;
 }
 
 interface ClaimSchedulerConfig {
@@ -32,6 +33,11 @@ export interface ClaimSchedulerDeps {
   getJwt(): Promise<string | undefined>;
   createClient(jwt: string): ClaimGateway;
   getCaptcha(): Promise<{ verifyParam: string; region?: string }>;
+  /**
+   * 3.16.3 `configs.captcha` gate. Absent → captcha always required (the
+   * pre-3.16.3 wire). A throwing gate also fails open to "required".
+   */
+  captchaRequired?(): Promise<boolean>;
   config: ClaimSchedulerConfig;
   log?: (message: string) => void;
   now?: () => number;
@@ -118,9 +124,9 @@ export class ClaimScheduler {
       return { action: "idle" };
     }
 
-    let captcha: { verifyParam: string; region?: string };
+    let captcha: { verifyParam: string; region?: string } | undefined;
     try {
-      captcha = await this.deps.getCaptcha();
+      captcha = await this.resolveCaptcha();
     } catch (err) {
       return this.errorBackoff(`captcha token failed: ${(err as Error).message}`);
     }
@@ -146,6 +152,22 @@ export class ClaimScheduler {
       this.stop();
     }
     return { action: "failed", outcome, holdMs };
+  }
+
+  /** 3.16.3 gate: absent dep → required; a throwing gate fails open to required. */
+  private async isCaptchaRequired(): Promise<boolean> {
+    if (!this.deps.captchaRequired) return true;
+    try {
+      return await this.deps.captchaRequired();
+    } catch {
+      return true;
+    }
+  }
+
+  /** A token when the gate asks for one, `undefined` when the claim goes bare. */
+  private async resolveCaptcha(): Promise<{ verifyParam: string; region?: string } | undefined> {
+    if (!(await this.isCaptchaRequired())) return undefined;
+    return this.deps.getCaptcha();
   }
 
   private pickPlan(plans: ClaimablePlan[]): ClaimablePlan | null {
