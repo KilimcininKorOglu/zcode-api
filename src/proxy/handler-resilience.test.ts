@@ -13,10 +13,11 @@
  * Both tests use the start-plan path with an injected captcha module via
  * `mock.module("./captcha.js")` (same technique as captcha-pool.test.ts).
  */
-import { describe, it, expect, mock } from "bun:test";
+import { describe, it, expect, mock, beforeAll } from "bun:test";
 import { proxyRequest } from "./handler.js";
 import type { ProxyConfig, ProxyIdentity } from "../config/types.js";
 import { AuthManager } from "../auth/manager.js";
+import { SUBAGENT_PREFIX } from "./trace-headers.js";
 
 const IDENTITY: ProxyIdentity = {
   appVersion: "test-1.0.0",
@@ -153,5 +154,94 @@ describe("proxyRequest — start-plan resilience (PR #34 review P1/P3)", () => {
     expect(resp.status).toBe(200);
     const body = await resp.json();
     expect(body.choices[0].message.content).toBe("resilience reply");
+  });
+});
+
+/**
+ * The gateway cross-checks `x-zcode-session-type` against the system shape: a
+ * start-plan request carrying a client system prompt takes the 2-block
+ * customSystemPrompt path, which must ride a subagent session identity
+ * (405/3012 "unusual activity" otherwise — live-verified 2026-10-23).
+ */
+describe("proxyRequest — start-plan custom system takes the subagent identity", () => {
+  beforeAll(() => {
+    mock.module("./captcha.js", () => ({
+      getCaptchaToken: async () => ({ verifyParam: "cap", region: "sgp" }),
+      detectCaptchaChallenge: () => null,
+      RETRY_HEADERS: { PARAM: "x-aliyun-captcha-verify-param", REGION: "x-aliyun-captcha-verify-region" },
+    }));
+  });
+
+  /** Captures the upstream Request and answers with a plain Anthropic message. */
+  function captureContext() {
+    const ctx: { req?: Request } = {};
+    const fetchImpl = (async (req: Request) => {
+      ctx.req = req;
+      return new Response(ANTHROPIC_OK, { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    return { ctx, fetchImpl };
+  }
+
+  function messagesBody(system: unknown): string {
+    return JSON.stringify({ model: "glm-4.6", max_tokens: 16, system, messages: [{ role: "user", content: "hi" }] });
+  }
+
+  it("sends 2 system blocks and derives the subagent session type", async () => {
+    const { ctx, fetchImpl } = captureContext();
+    const auth = new AuthManager();
+    auth.setOAuthCredential({ apiKey: "key-mock", provider: "zai", jwt: "jwt-mock" });
+    const clientReq = new Request("http://localhost:8080/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: messagesBody([{ type: "text", text: "User rule" }]),
+    });
+
+    const resp = await proxyRequest(clientReq, "anthropic", { config: TEST_CONFIG, auth, fetchImpl });
+    expect(resp.status).toBe(200);
+    expect(ctx.req!.headers.get("x-zcode-session-type")).toBe("subagent");
+    // observe mode does not forward the session id; when it is forwarded the
+    // internal subagent prefix never reaches the wire.
+    const wireSessionId = ctx.req!.headers.get("x-session-id");
+    expect(wireSessionId === null || !wireSessionId.startsWith(SUBAGENT_PREFIX)).toBe(true);
+
+    const upstreamBody = await ctx.req!.clone().json() as { system: Array<{ text: string }> };
+    expect(upstreamBody.system).toHaveLength(2);
+    expect(upstreamBody.system[1].text).toBe("\nUser rule");
+  });
+
+  it("synthesizes the subagent identity when client identity is off", async () => {
+    const { ctx, fetchImpl } = captureContext();
+    const auth = new AuthManager();
+    auth.setOAuthCredential({ apiKey: "key-mock", provider: "zai", jwt: "jwt-mock" });
+    const clientReq = new Request("http://localhost:8080/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: messagesBody("User rule"),
+    });
+    const config: ProxyConfig = { ...TEST_CONFIG, clientIdentity: { ...TEST_CONFIG.clientIdentity, mode: "off" } };
+
+    const resp = await proxyRequest(clientReq, "anthropic", { config, auth, fetchImpl });
+    expect(resp.status).toBe(200);
+    expect(ctx.req!.headers.get("x-zcode-session-type")).toBe("subagent");
+    const wireSessionId = ctx.req!.headers.get("x-session-id");
+    expect(wireSessionId).toBeDefined();
+    expect(wireSessionId!.startsWith(SUBAGENT_PREFIX)).toBe(false);
+  });
+
+  it("keeps the main identity and the 3-block chain without a client system prompt", async () => {
+    const { ctx, fetchImpl } = captureContext();
+    const auth = new AuthManager();
+    auth.setOAuthCredential({ apiKey: "key-mock", provider: "zai", jwt: "jwt-mock" });
+    const clientReq = new Request("http://localhost:8080/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: messagesBody(undefined),
+    });
+
+    const resp = await proxyRequest(clientReq, "anthropic", { config: TEST_CONFIG, auth, fetchImpl });
+    expect(resp.status).toBe(200);
+    expect(ctx.req!.headers.get("x-zcode-session-type")).toBe("main");
+    const upstreamBody = await ctx.req!.clone().json() as { system: unknown[] };
+    expect(upstreamBody.system).toHaveLength(3);
   });
 });

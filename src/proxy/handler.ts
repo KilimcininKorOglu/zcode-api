@@ -62,7 +62,8 @@ import { probeFetchDecompressBehavior } from "./decompress-probe.js";
 import { collectAnthropicMessage } from "./sse-collector.js";
 import { appendErrorLog } from "./error-log.js";
 import { StreamMetrics } from "./stream-metrics.js";
-import { buildAnthropicMetadataUserId } from "./trace-headers.js";
+import { buildAnthropicMetadataUserId, SUBAGENT_PREFIX } from "./trace-headers.js";
+import { hasCustomSystemPrompt } from "./system-prompt.js";
 
 /** Options for the proxy handler. */
 export interface ProxyHandlerOptions {
@@ -195,11 +196,19 @@ export async function proxyRequest(
   // Session affinity is calculated on the translated anthropic side: upstream requests are always
   // Anthropic shape, so OpenAI client and Anthropic client in the same conversation get isomorphic
   // canonical identity (hash lineage / task identity aligned with upstream conversation, not client dialect).
-  const clientSession = resolveSessionContext({ clientReq, body: upstreamBody, traceBody: body, upstreamFormat, model: meta.model, config });
+  let clientSession = resolveSessionContext({ clientReq, body: upstreamBody, traceBody: body, upstreamFormat, model: meta.model, config });
   if (debug && clientSession) {
     const shortSession = clientSession.sessionId ? clientSession.sessionId.slice(0, 10) : "-";
     debugLine(reqId, `clientIdentity source=${clientSession.source} action=${clientSession.action} confidence=${clientSession.confidence.toFixed(2)} session=${shortSession}`);
   }
+
+  // start-plan + client system prompt: body-transformer emits the official
+  // customSystemPrompt shape (2 system blocks, subagent shape). The gateway
+  // cross-checks x-zcode-session-type against the system shape; main + custom
+  // = 405/3012 "unusual activity" (opencode-502 root cause, live-verified
+  // 2026-10-23; subagent + custom 200). Custom requests therefore ride the
+  // subagent session identity — see applyCustomSystemSession.
+  clientSession = applyCustomSystemSession(clientSession, startPlan, upstreamBody, debug, reqId);
 
   // Bundle `E2e` fires for EVERY anthropic-kind request (both plans) — the
   // injected user_id is the device/session blob, never the account uuid.
@@ -1289,6 +1298,59 @@ const REQ_ID_WIDTH = BOOT_TOKEN.length + 5;
 
 function nextReqId(): string {
   return `${BOOT_TOKEN}-#${String(++reqCounter).padStart(3, "0")}`;
+}
+
+/**
+ * Pair a start-plan custom-system request with the subagent session identity.
+ * Returns the session unchanged for every other request.
+ */
+function applyCustomSystemSession(
+  session: ClientSessionResult | undefined,
+  startPlan: boolean,
+  body: string | undefined,
+  debug: boolean,
+  reqId: string,
+): ClientSessionResult | undefined {
+  if (!startPlan || !bodyHasClientSystem(body)) return session;
+  if (debug) debugLine(reqId, "subagent session identity applied (custom system prompt path)");
+  return subagentSession(session);
+}
+
+/**
+ * Subagent session identity for the custom-system path: the same resolved
+ * session id with a `subagent_agent_` prefix (stripped on the wire by the
+ * trace-header builder, derivation only), or a synthesized id when lineage
+ * produced none. The explicit `sessionType` covers the no-session-id case.
+ */
+function subagentSession(base: ClientSessionResult | undefined): ClientSessionResult {
+  if (!base) {
+    return {
+      source: "none",
+      action: "enforce",
+      confidence: 1,
+      sessionId: `${SUBAGENT_PREFIX}${crypto.randomUUID()}`,
+      sessionType: "subagent",
+    };
+  }
+  const id = base.upstreamSessionId ?? base.sessionId ?? crypto.randomUUID();
+  const subagentId = id.startsWith(SUBAGENT_PREFIX) ? id : `${SUBAGENT_PREFIX}${id}`;
+  return { ...base, sessionId: subagentId, upstreamSessionId: subagentId, sessionType: "subagent" };
+}
+
+/**
+ * Whether the (Anthropic-shaped) upstream body carries a client system prompt
+ * — i.e. transformRequestBody will take the customSystemPrompt 2-block path.
+ * Same predicate as buildStartPlanSystem via hasCustomSystemPrompt; parse
+ * failures read as "no custom prompt" (fail-open to the default shape).
+ */
+function bodyHasClientSystem(body: string | undefined): boolean {
+  if (!body) return false;
+  try {
+    const parsed = JSON.parse(body) as { system?: unknown };
+    return hasCustomSystemPrompt(parsed?.system);
+  } catch {
+    return false;
+  }
 }
 
 const DEBUG_BODY_PREVIEW = 200;
