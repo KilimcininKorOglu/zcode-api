@@ -3,7 +3,7 @@
  * (injected manager), covering model rewrite + auth swap + unsigned dispatch,
  * and the selectionFallback redispatch after a card rejection.
  */
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, afterEach } from "bun:test";
 import { proxyRequest } from "./handler.js";
 import type { ProxyConfig, ProxyIdentity } from "../config/types.js";
 import { AuthManager } from "../auth/manager.js";
@@ -41,6 +41,10 @@ const TEST_CONFIG: ProxyConfig = {
 
 const CRED = "testkey.testsecret";
 const JWT = "test-zcode-jwt";
+const liveManagers: HighspeedManager[] = [];
+afterEach(() => {
+  for (const manager of liveManagers.splice(0)) manager.stop();
+});
 
 function oauthAuth(key = CRED): AuthManager {
   const [apiKey, secret] = key.split(".");
@@ -83,6 +87,7 @@ async function cardHoldingManager(): Promise<HighspeedManager> {
     }), { status: 200 })) as unknown as typeof fetch,
   });
   manager.onRequest("glm-5.1", "t-1", { jwt: JWT, codingPlanAuth: CRED, family: "zai" });
+  liveManagers.push(manager);
   await new Promise((r) => setTimeout(r, 5));
   expect(manager.activeCard()?.cardId).toBe("hsc_wiring_1");
   return manager;
@@ -201,7 +206,15 @@ describe("proxyRequest highspeed wiring", () => {
   });
 
   it("leaves requests untouched when the model is not eligible", async () => {
-    const manager = await cardHoldingManager();
+    const base = await cardHoldingManager();
+    let noteActivityCalls = 0;
+    // Object.create wrapper (NOT Object.assign): mutating base in place would
+    // rebind base.noteActivity to the spy itself, causing infinite recursion.
+    const manager = Object.create(base) as HighspeedManager;
+    manager.noteActivity = () => {
+      noteActivityCalls += 1;
+      base.noteActivity();
+    };
     const upstreamCalls: { headers: Headers; body: string }[] = [];
 
     const resp = await proxyRequest(new Request("http://localhost:8080/v1/messages", {
@@ -226,5 +239,30 @@ describe("proxyRequest highspeed wiring", () => {
     expect(upstreamCalls[0]!.headers.get("x-highspeed-card-id")).toBeNull();
     expect(upstreamCalls[0]!.headers.get("x-api-key")).toBe(CRED);
     expect(JSON.parse(upstreamCalls[0]!.body).model).toBe("glm-4.6");
+    // In-flight activity must not re-arm the draw loop for traffic that can
+    // never mount a card (idle-window invariant).
+    expect(noteActivityCalls).toBe(0);
+  });
+
+  it("notifies in-flight activity for an eligible model after the response completes", async () => {
+    const base = await cardHoldingManager();
+    let noteActivityCalls = 0;
+    const manager = Object.create(base) as HighspeedManager;
+    manager.noteActivity = () => {
+      noteActivityCalls += 1;
+      base.noteActivity();
+    };
+
+    const resp = await proxyRequest(anthropicClientReq(), "anthropic", {
+      config: TEST_CONFIG,
+      auth: oauthAuth(),
+      fetchImpl: Object.assign(async () => anthropicOk(), { preconnect: () => {} }) as unknown as typeof fetch,
+      endpointRouting: null,
+      clientSigning: null,
+      highspeed: manager,
+    });
+
+    expect(resp.status).toBe(200);
+    expect(noteActivityCalls).toBe(1);
   });
 });

@@ -528,26 +528,42 @@ describe("handleResponses resilience (CL-08)", () => {
     expect(body.error.type).toBe("upstream_unreachable");
   });
 
-  it("captcha solver failure → 503 captcha_solver_failed", async () => {
+  it("captcha solver failure → 503 captcha_solver_failed (after bounded acquire retries)", async () => {
     const START_PLAN: ProxyConfig = { ...CONFIG, plan: "start-plan", planAutoSwitch: true, provider: "bigmodel" };
     const fetchImpl = (async (): Promise<Response> =>
       new Response(JSON.stringify({ code: 3007, msg: "captcha verify failed" }), {
         status: 400, headers: { "content-type": "application/json" },
       })) as unknown as typeof fetch;
 
-    const captcha = {
-      RETRY_HEADERS: { PARAM: "x-aliyun-captcha-verify-param", REGION: "x-aliyun-captcha-verify-region" },
-      getCaptchaToken: async () => {
-        throw new Error("solver exploded");
-      },
-      detectCaptchaChallenge: (resp: Response) => resp.headers.get("x-aliyun-captcha-verify-param"),
-    } as unknown as CaptchaModule;
+    // Strict acquisition retries within CAPTCHA_ACQUIRE_BUDGET_MS before
+    // giving up — shrink the budget for the test.
+    const savedBudget = process.env.CAPTCHA_ACQUIRE_BUDGET_MS;
+    process.env.CAPTCHA_ACQUIRE_BUDGET_MS = "10";
+    let upstreamCalled = 0;
+    const countingFetch = (async (req: Request): Promise<Response> => {
+      upstreamCalled += 1;
+      return fetchImpl(req);
+    }) as unknown as typeof fetch;
+    try {
+      const captcha = {
+        RETRY_HEADERS: { PARAM: "x-aliyun-captcha-verify-param", REGION: "x-aliyun-captcha-verify-region" },
+        getCaptchaToken: async () => {
+          throw new Error("solver exploded");
+        },
+        detectCaptchaChallenge: (resp: Response) => resp.headers.get("x-aliyun-captcha-verify-param"),
+      } as unknown as CaptchaModule;
 
-    const resp = await handleResponses(makeReq({ model: "glm-5.2", input: "hi" }), {
-      config: START_PLAN, auth, fetchImpl, captcha,
-    });
-    expect(resp.status).toBe(503);
-    const body = await resp.json();
-    expect(body.error.type).toBe("captcha_solver_failed");
+      const resp = await handleResponses(makeReq({ model: "glm-5.2", input: "hi" }), {
+        config: START_PLAN, auth, fetchImpl: countingFetch, captcha,
+      });
+      expect(resp.status).toBe(503);
+      const body = await resp.json();
+      expect(body.error.type).toBe("captcha_solver_failed");
+      // Strict mode: a captcha-less request is NEVER dispatched upstream.
+      expect(upstreamCalled).toBe(0);
+    } finally {
+      if (savedBudget === undefined) delete process.env.CAPTCHA_ACQUIRE_BUDGET_MS;
+      else process.env.CAPTCHA_ACQUIRE_BUDGET_MS = savedBudget;
+    }
   });
 });

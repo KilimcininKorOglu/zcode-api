@@ -155,6 +155,18 @@ export class HighspeedManager {
     this.ensureLoop();
   }
 
+  /**
+   * In-flight request activity (an SSE response still producing): extend the
+   * idle window WITHOUT re-stamping model/auth params — a stream that has
+   * been generating for minutes is not "idle", so a turn that ends inside
+   * the window must not let the draw loop idle-stop right after it. Fires at stream end: a stream longer than IDLE_MS
+   * still lets tick() stop the loop mid-flight. Never ignites a stopped
+   * loop; the next real request does that via onRequest.
+   */
+  noteActivity(): void {
+    this.loopUntil = this.now() + IDLE_MS;
+  }
+
   /** The active card, or null when outside the window (expiry-checked). */
   activeCard(): HighspeedCard | null {
     this.expireCard(this.now());

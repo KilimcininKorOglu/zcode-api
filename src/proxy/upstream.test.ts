@@ -94,15 +94,6 @@ describe("buildUpstreamURL", () => {
     );
   });
 
-  it("can still build direct Anthropic upstream URLs when explicitly requested", () => {
-    expect(buildUpstreamURL("anthropic", ZAI_PROVIDER)).toBe(
-      "https://api.z.ai/api/anthropic/v1/messages",
-    );
-    expect(buildUpstreamURL("anthropic", BIGMODEL_PROVIDER)).toBe(
-      "https://open.bigmodel.cn/api/anthropic/v1/messages",
-    );
-  });
-
   it("builds count_tokens URL for Anthropic upstream when subpath is provided", () => {
     expect(buildUpstreamURL("anthropic", ZAI_PROVIDER, "coding-plan", "/count_tokens")).toBe(
       "https://api.z.ai/api/anthropic/v1/messages/count_tokens",

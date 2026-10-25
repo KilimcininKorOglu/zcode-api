@@ -33,7 +33,7 @@ import {
 import { credentialString } from "../auth/types.js";
 import { sendOrderedUpstreamRequest, orderedAdvertisedCodings } from "./ordered-transport.js";
 import { transformRequestBody } from "./body-transformer.js";
-import { isCaptchaChallenged, retryOnCaptchaChallenge } from "./captcha-retry.js";
+import { isCaptchaChallenged, retryOnCaptchaChallenge, resolveCaptchaAcquireBudgetMs, acquireCaptchaWithRetry, type CaptchaModuleLike } from "./captcha-retry.js";
 import { activePlan, planPriorityOf, retryOnPlanExhausted, sniffStartPlanRejection, shouldFallbackPlan, type PlanTier } from "../plan/auto.js";
 import { maybeUsePlanResetAndRetry } from "../plan/reset.js";
 import { clientTraceFields, type ClientSessionResult } from "./client-session.js";
@@ -46,7 +46,7 @@ import { gzipSync } from "node:zlib";
 // by captcha-solver.ts, so non-start-plan processes never pay its startup
 // cost. Desktop Bun keeps the same code path; the dynamic import resolves
 // synchronously enough on Bun's warm cache.
-type CaptchaModule = typeof import("./captcha.js");
+type CaptchaModule = CaptchaModuleLike;
 let captchaModule: CaptchaModule | null = null;
 async function loadCaptcha(): Promise<CaptchaModule> {
   if (!captchaModule) captchaModule = await import("./captcha.js");
@@ -83,6 +83,8 @@ export interface ProxyHandlerOptions {
   clientSigning?: ClientSigningManager | null;
   /** Override the process-wide highspeed card manager (for testing). `null` disables. */
   highspeed?: HighspeedManager | null;
+  /** Override the lazily-imported captcha module (for testing). */
+  captcha?: CaptchaModule;
 }
 
 /**
@@ -243,13 +245,42 @@ export async function proxyRequest(
   }
 
   let captchaHeaders: Record<string, string> | undefined;
+  // In-flight is activity: an SSE still producing
+  // is not idle — refresh the captcha pool's and highspeed draw loop's idle
+  // windows when the request completes, so a long stream cannot decay the
+  // pool or self-extinguish the loop (the next tool-loop turn would land on
+  // a falsely idle pool). Captcha stays lazily imported (coding-plan never
+  // loads it); highspeed is only noted for requests that entered onRequest —
+  // noting ineligible traffic would spin the draw loop for traffic that can
+  // never mount a card.
+  const hsNoteEligible = highspeedAuth !== undefined;
+  const noteInFlightEnded = (): void => {
+    if (startPlan) void (opts.captcha ? Promise.resolve(opts.captcha) : loadCaptcha()).then((m) => m.noteDemand?.()).catch(() => {});
+    if (hsNoteEligible) highspeedManager?.noteActivity();
+  };
   if (startPlan) {
+    // Captcha headers are load-bearing on the start plane (live 2026-10-23):
+    // a captcha-less dispatch is a shape the real
+    // client never produces and the ESA edge answers it with intermittent
+    // empty-body 502s (no origin request-id; the 403 challenge retry below
+    // does not recognize that failure). Acquisition failures therefore retry
+    // within a bounded budget and then answer an honest 503 — never
+    // fail-open without headers. A null token means the server explicitly
+    // disabled captcha, where no headers IS the correct shape.
     try {
-      const captcha = await loadCaptcha();
-      const token = await captcha.getCaptchaToken(config.identity.appVersion, config.identity);
-      captchaHeaders = { [captcha.RETRY_HEADERS.PARAM]: token.verifyParam, [captcha.RETRY_HEADERS.REGION]: token.region };
-    } catch {
-      // Will solve on 403 fallback below
+      captchaHeaders = await acquireCaptchaWithRetry(async () => {
+        const captcha = opts.captcha ?? (await loadCaptcha());
+        const token = await captcha.getCaptchaToken(config.identity.appVersion, config.identity);
+        return token ? { [captcha.RETRY_HEADERS.PARAM]: token.verifyParam, [captcha.RETRY_HEADERS.REGION]: token.region } : undefined;
+      }, {
+        budgetMs: resolveCaptchaAcquireBudgetMs(process.env.CAPTCHA_ACQUIRE_BUDGET_MS),
+        signal: clientReq.signal,
+        onRetry: debug ? (err) => debugError(reqId, "captcha_acquire_retry", `${err.message}; retrying`) : undefined,
+      });
+    } catch (err) {
+      if (debug) debugError(reqId, "captcha_solver_failed", (err as Error).message);
+      printRow(reqId, format, meta, 503, started, Date.now(), 0, 0, 0);
+      return errorResponse(503, "captcha_solver_failed", `Captcha acquisition failed: ${(err as Error).message}. The start-plan edge rejects captcha-less requests — retry shortly.`);
     }
   }
 
@@ -560,7 +591,7 @@ export async function proxyRequest(
   // response-header variant AND the in-body `{"code":3007}` variant (observed
   // 2026-08-29 as HTTP 400 JSON with no captcha header) via the shared
   // captcha-retry seam (used by /v1/responses too).
-  const captcha = startPlan ? await loadCaptcha() : null;
+  const captcha = startPlan ? (opts.captcha ?? (await loadCaptcha())) : null;
   const captchaChallenge = captcha ? await isCaptchaChallenged(upstreamResp, captcha) : false;
   if (captchaChallenge && captcha) {
     console.log(`${reqId} captcha challenge, re-solving...`);
@@ -608,14 +639,18 @@ export async function proxyRequest(
       if (!meta.stream) {
         // Batch-as-stream (see withStreamEnabled): a batch OpenAI client gets
         // the reassembled JSON, not a stream it never asked for.
-        return await translatedBatchResponse(clientReq, upstreamResp, meta.model, reqId, format, meta, started, headersAt);
+        const batch = await translatedBatchResponse(clientReq, upstreamResp, meta.model, reqId, format, meta, started, headersAt);
+        noteInFlightEnded();
+        return batch;
       }
       const translated = anthropicSseToOpenaiSse(upstreamResp.body, meta.model);
       const [clientBody, statsBody] = translated.tee();
-      observeStream(reqId, format, meta, upstreamResp.status, started, statsBody, null);
+      observeStream(reqId, format, meta, upstreamResp.status, started, statsBody, null, noteInFlightEnded);
       return translatedSseResponse(clientBody);
     }
-    return await translatedBatchResponse(clientReq, upstreamResp, meta.model, reqId, format, meta, started, headersAt);
+    const batchResp = await translatedBatchResponse(clientReq, upstreamResp, meta.model, reqId, format, meta, started, headersAt);
+    noteInFlightEnded();
+    return batchResp;
   }
 
   if (translateAnthropicToOpenAI) {
@@ -627,20 +662,24 @@ export async function proxyRequest(
     if (isSSE && upstreamResp.body) {
       const translated = openaiSseToAnthropicSse(upstreamResp.body, meta.model);
       const [clientBody, statsBody] = translated.tee();
-      observeStream(reqId, format, meta, upstreamResp.status, started, statsBody, null);
+      observeStream(reqId, format, meta, upstreamResp.status, started, statsBody, null, noteInFlightEnded);
       return translatedSseResponse(clientBody);
     }
-    return await translatedOpenAIToAnthropicBatchResponse(clientReq, upstreamResp, reqId, format, meta, started, headersAt);
+    const batchResp = await translatedOpenAIToAnthropicBatchResponse(clientReq, upstreamResp, reqId, format, meta, started, headersAt);
+    noteInFlightEnded();
+    return batchResp;
   }
 
   if (isSSE && upstreamResp.body) {
     if (!meta.stream) {
       // Our own batch-as-stream injection (see withStreamEnabled): the client
       // asked for a single JSON, so reassemble the stream into it.
-      return await collectedBatchResponse(upstreamResp, clientReq, reqId, format, meta, started, headersAt);
+      const collected = await collectedBatchResponse(upstreamResp, clientReq, reqId, format, meta, started, headersAt);
+      noteInFlightEnded();
+      return collected;
     }
     const [clientBody, statsBody] = upstreamResp.body.tee();
-    observeStream(reqId, format, meta, upstreamResp.status, started, statsBody, upstreamResp.headers.get("content-encoding"));
+    observeStream(reqId, format, meta, upstreamResp.status, started, statsBody, upstreamResp.headers.get("content-encoding"), noteInFlightEnded);
     return passthroughResponse(upstreamResp, clientReq.headers.get("accept-encoding"), clientBody);
   }
 
@@ -652,6 +691,7 @@ export async function proxyRequest(
       if (typeof parsed.input_tokens === "number") inputTokens = parsed.input_tokens;
     } catch {}
     printRow(reqId, format, meta, upstreamResp.status, started, headersAt, 0, 0, 0, 0, inputTokens);
+    noteInFlightEnded();
     return new Response(text, {
       status: upstreamResp.status,
       statusText: upstreamResp.statusText,
@@ -660,6 +700,7 @@ export async function proxyRequest(
   }
 
   printRow(reqId, format, meta, upstreamResp.status, started, headersAt, 0, 0, 0);
+  noteInFlightEnded();
   return passthroughResponse(upstreamResp, clientReq.headers.get("accept-encoding"));
 }
 
@@ -1519,6 +1560,7 @@ function observeStream(
   requestSentAt: number,
   body: ReadableStream<Uint8Array>,
   contentEncoding: string | null,
+  onEnd?: () => void,
 ): void {
   const codings = contentEncoding
     ? contentEncoding.toLowerCase().split(",").map((c) => c.trim()).filter((c) => c !== "" && c !== "identity")
@@ -1573,6 +1615,12 @@ function observeStream(
       if (canParseSse && sseBuffer) parseSse(sseBuffer, lastChunkAt);
     } catch {}
     const endAt = Date.now();
+    // Stream finished (or failed): the request is no longer in flight. Fired
+    // exactly once from this reader loop — the single point that observes
+    // SSE completion for every streaming response path.
+    try { onEnd?.(); } catch (err) {
+      console.error(`${reqId} stream-end hook failed: ${(err as Error).message}`);
+    }
     const ttfbMs = (firstChunkAt > 0 ? firstChunkAt : endAt) - requestSentAt;
     const totalMs = endAt - requestSentAt;
     const tokens = metrics.tokens;

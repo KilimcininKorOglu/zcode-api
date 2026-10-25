@@ -30,6 +30,14 @@ provider: zai
 #   "start-plan"            — routes through zcode.z.ai with JWT auth (requires \`auth login\`)
 plan: coding-plan
 
+# Start-plan captcha controls (environment variables only, milliseconds):
+# CAPTCHA_ACQUIRE_BUDGET_MS=45000 bounds initial acquisition and retry backoff.
+# Expiry returns 503 without forwarding; client abort stops waiting immediately.
+# CAPTCHA_CONFIG_TIMEOUT_MS=15000 covers config headers AND the complete body.
+# CAPTCHA_CONFIG_TTL_MS=3600000 caches successful snapshots only. Refresh errors
+# preserve the last known config, including an explicit disabled state.
+# Non-numeric, non-finite, or non-positive values use the defaults above.
+
 # Hybrid plan auto-switch: while on, the watcher keeps traffic on the first
 # plan in \`planPriority\` whose watched signals still have quota, and a
 # request a plan rejects falls to the next plan for that one request. The

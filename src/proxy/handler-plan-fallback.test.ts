@@ -7,11 +7,11 @@
  * while `planAutoSwitch` is on; with it off, plan selection is entirely the
  * operator's config and failures pass through untouched.
  */
-import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach } from "bun:test";
 import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { proxyRequest } from "./handler.js";
+import { proxyRequest, type ProxyHandlerOptions } from "./handler.js";
 import { activePlan, __resetPlanAutoStateForTests, __setLastUsableForTests } from "../plan/auto.js";
 import { __resetPlanResetStateForTests, __setResetRightsForTests, __setPlanResetDepsForTests } from "../plan/reset.js";
 import type { ProxyConfig, ProxyIdentity } from "../config/types.js";
@@ -76,17 +76,26 @@ beforeEach(() => {
     fetchImpl: resetFetch,
     loadCredentialImpl: async () => ({ apiKey: "key", provider: "zai", jwt: "jwt-mock" }),
   });
-  // Deterministic captcha stub: the prewarm takes tok-1, no challenge is
-  // detected on 402/401/403 responses (header-only detection).
-  mock.module("./captcha.js", () => ({
-    detectCaptchaChallenge: (resp: Response): string | null => {
-      const v = resp.headers.get("x-aliyun-captcha-verify-param");
-      return v && v.trim().length > 0 ? v.trim() : null;
-    },
-    getCaptchaToken: async () => ({ verifyParam: "tok-1", region: "sgp" }),
-    RETRY_HEADERS: { PARAM: "x-aliyun-captcha-verify-param", REGION: "x-aliyun-captcha-verify-region" },
-  }));
 });
+
+/**
+ * Deterministic captcha stub injected per request: the prewarm takes tok-1 and
+ * no challenge is detected on 402/401/403 responses (header-only detection).
+ * Injected instead of `mock.module("./captcha.js")` because module mocks are
+ * process-wide and would replace the real facade for other test files.
+ */
+const CAPTCHA_STUB: NonNullable<ProxyHandlerOptions["captcha"]> = {
+  detectCaptchaChallenge: (resp: Response): string | null => {
+    const v = resp.headers.get("x-aliyun-captcha-verify-param");
+    return v && v.trim().length > 0 ? v.trim() : null;
+  },
+  getCaptchaToken: async () => ({ verifyParam: "tok-1", region: "sgp" }),
+  RETRY_HEADERS: { PARAM: "x-aliyun-captcha-verify-param", REGION: "x-aliyun-captcha-verify-region" },
+};
+
+function proxy(req: Request, format: "anthropic" | "openai", opts: ProxyHandlerOptions): Promise<Response> {
+  return proxyRequest(req, format, { captcha: CAPTCHA_STUB, ...opts });
+}
 
 interface RecordedCall {
   url: string;
@@ -153,7 +162,7 @@ describe("proxyRequest — hybrid plan fallback", () => {
       { preconnect: () => {} },
     ) as typeof fetch;
 
-    const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
+    const resp = await proxy(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
 
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toContain("https://zcode.z.ai/api/v1/zcode-plan/");
@@ -164,7 +173,7 @@ describe("proxyRequest — hybrid plan fallback", () => {
   it("retries a start-plan 402 once on the coding plan and pins coding-plan", async () => {
     const calls: RecordedCall[] = [];
     const config: ProxyConfig = { ...TEST_CONFIG, planAutoSwitch: true };
-    const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl: makeFetch(calls) });
+    const resp = await proxy(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl: makeFetch(calls) });
 
     expect(calls).toHaveLength(2);
     expect(calls[0].url).toContain("https://zcode.z.ai/api/v1/zcode-plan/");
@@ -184,10 +193,10 @@ describe("proxyRequest — hybrid plan fallback", () => {
   it("routes the next request straight to the coding plan after a fallback", async () => {
     const config: ProxyConfig = { ...TEST_CONFIG, planAutoSwitch: true };
     const first: RecordedCall[] = [];
-    await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl: makeFetch(first) });
+    await proxy(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl: makeFetch(first) });
 
     const second: RecordedCall[] = [];
-    const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl: makeFetch(second) });
+    const resp = await proxy(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl: makeFetch(second) });
     expect(second).toHaveLength(1);
     expect(second[0].url).toContain("https://api.z.ai/api/anthropic");
     expect(resp.status).toBe(200);
@@ -217,7 +226,7 @@ describe("proxyRequest — hybrid plan fallback", () => {
       { preconnect: () => {} },
     ) as typeof fetch;
     const config: ProxyConfig = { ...TEST_CONFIG, planAutoSwitch: true };
-    const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
+    const resp = await proxy(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
 
     expect(calls).toHaveLength(2);
     expect(calls[0].url).toContain("/api/v1/zcode-plan/");
@@ -243,7 +252,7 @@ describe("proxyRequest — hybrid plan fallback", () => {
       { preconnect: () => {} },
     ) as typeof fetch;
     const config: ProxyConfig = { ...TEST_CONFIG, planAutoSwitch: true };
-    const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
+    const resp = await proxy(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
 
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toContain("/api/v1/zcode-plan/");
@@ -254,7 +263,7 @@ describe("proxyRequest — hybrid plan fallback", () => {
   it("does not fall back on a start-plan 402 when planAutoSwitch is off", async () => {
     const calls: RecordedCall[] = [];
     const config: ProxyConfig = { ...TEST_CONFIG, planAutoSwitch: false };
-    const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl: makeFetch(calls) });
+    const resp = await proxy(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl: makeFetch(calls) });
 
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toContain("https://zcode.z.ai/api/v1/zcode-plan/");
@@ -287,7 +296,7 @@ describe("proxyRequest — hybrid plan fallback", () => {
       }) as typeof fetch,
       { preconnect: () => {} },
     ) as typeof fetch;
-    const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
+    const resp = await proxy(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
 
     expect(calls).toHaveLength(2);
     expect(calls[0].url).toContain("https://api.z.ai/api/anthropic");
@@ -331,7 +340,7 @@ describe("proxyRequest — hybrid plan fallback", () => {
       }) as typeof fetch,
       { preconnect: () => {} },
     ) as typeof fetch;
-    const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
+    const resp = await proxy(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
 
     expect(calls).toHaveLength(2);
     expect(calls[0].url).toContain("https://api.z.ai/api/anthropic");
@@ -366,7 +375,7 @@ describe("proxyRequest — hybrid plan fallback", () => {
       }) as typeof fetch,
       { preconnect: () => {} },
     ) as typeof fetch;
-    const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
+    const resp = await proxy(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
 
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toContain("https://api.z.ai/api/anthropic");
@@ -405,7 +414,7 @@ describe("proxyRequest — hybrid plan fallback", () => {
       }) as typeof fetch,
       { preconnect: () => {} },
     ) as typeof fetch;
-    const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
+    const resp = await proxy(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
 
     // Two coding hits (rejected + retried on the reopened window), never start-plan.
     expect(calls).toHaveLength(2);
@@ -436,7 +445,7 @@ describe("proxyRequest — hybrid plan fallback", () => {
       }) as typeof fetch,
       { preconnect: () => {} },
     ) as typeof fetch;
-    const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
+    const resp = await proxy(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
 
     // One coding hit only: the transient body blocked the spend (the right survives).
     expect(calls).toHaveLength(1);
@@ -465,7 +474,7 @@ describe("proxyRequest — hybrid plan fallback", () => {
       }) as typeof fetch,
       { preconnect: () => {} },
     ) as typeof fetch;
-    const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
+    const resp = await proxy(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
 
     expect(calls).toHaveLength(1);
     expect(resp.status).toBe(429);
@@ -492,7 +501,7 @@ describe("proxyRequest — hybrid plan fallback", () => {
       { preconnect: () => {} },
     ) as typeof fetch;
     const config: ProxyConfig = { ...TEST_CONFIG, planAutoSwitch: true };
-    const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
+    const resp = await proxy(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
 
     // Two start-plan attempts (dispatch-level gateway retry) + the coding retry.
     expect(calls).toHaveLength(3);
@@ -525,7 +534,7 @@ describe("proxyRequest — hybrid plan fallback", () => {
       { preconnect: () => {} },
     ) as typeof fetch;
     const config: ProxyConfig = { ...TEST_CONFIG, plan: "coding-plan", planAutoSwitch: false };
-    const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
+    const resp = await proxy(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
 
     expect(calls).toHaveLength(2);
     expect(calls[0].url).toContain("https://api.z.ai/api/anthropic");
@@ -552,7 +561,7 @@ describe("proxyRequest — hybrid plan fallback", () => {
       { preconnect: () => {} },
     ) as typeof fetch;
     const config: ProxyConfig = { ...TEST_CONFIG, plan: "coding-plan", planAutoSwitch: false };
-    const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
+    const resp = await proxy(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
 
     expect(calls).toHaveLength(2);
     expect(resp.status).toBe(502);
@@ -586,7 +595,7 @@ describe("proxyRequest — hybrid plan fallback", () => {
       body: '{"model":"glm-4.6","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}',
       signal: controller.signal,
     });
-    const resp = await proxyRequest(clientReq, "anthropic", { config, auth: makeAuth(), fetchImpl });
+    const resp = await proxy(clientReq, "anthropic", { config, auth: makeAuth(), fetchImpl });
 
     expect(calls).toHaveLength(1);
     expect(resp.status).toBe(502);
@@ -606,7 +615,7 @@ describe("proxyRequest — hybrid plan fallback", () => {
       signal: AbortSignal.abort(),
     });
     const lines = await captureConsoleLog(async () => {
-      const resp = await proxyRequest(abortedReq, "anthropic", { config, auth: makeAuth(), fetchImpl: makeFetch(calls) });
+      const resp = await proxy(abortedReq, "anthropic", { config, auth: makeAuth(), fetchImpl: makeFetch(calls) });
       expect(resp.status).toBe(502);
     });
     expect(calls).toHaveLength(0);
@@ -628,7 +637,7 @@ describe("proxyRequest — hybrid plan fallback", () => {
     void calls;
     const config: ProxyConfig = { ...TEST_CONFIG, plan: "coding-plan", planAutoSwitch: false };
     const lines = await captureConsoleLog(async () => {
-      const resp = await proxyRequest(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
+      const resp = await proxy(makeClientReq(), "anthropic", { config, auth: makeAuth(), fetchImpl });
       expect(resp.status).toBe(502);
     });
     expect(lines.some((line) => line.includes("upstream connection lost after the request was written, not retried"))).toBe(true);
@@ -656,7 +665,7 @@ describe("proxyRequest — hybrid plan fallback", () => {
         { preconnect: () => {} },
       ) as typeof fetch;
       const config: ProxyConfig = { ...TEST_CONFIG, plan: "coding-plan", planAutoSwitch: false };
-      const resp = await proxyRequest(makeClientReq({ "x-request-id": "client-req-7" }), "anthropic", { config, auth: makeAuth(), fetchImpl });
+      const resp = await proxy(makeClientReq({ "x-request-id": "client-req-7" }), "anthropic", { config, auth: makeAuth(), fetchImpl });
       expect(resp.status).toBe(502);
 
       // The failure entries must carry the correlation ids: the gateway's own
