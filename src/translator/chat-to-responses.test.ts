@@ -276,7 +276,7 @@ describe("streaming", () => {
     expect(events.filter(e => e.type === "response.custom_tool_call_input.delta").map(e => e.delta).join("")).toBe("ls");
   });
 
-  it.each(['echo "hi"\n你好 😀', 'raw non-JSON input', '{"other":"value"}'])("keeps custom deltas equal to final input: %s", (input) => {
+  it.each(['echo "hi"\nünïcode 😀', 'raw non-JSON input', '{"other":"value"}'])("keeps custom deltas equal to final input: %s", (input) => {
     const state = newResponsesStreamState("glm-5.2", {
       meta: { customToolNames: new Set(["exec"]), namespaceMap: new Map(), hasToolSearch: false },
     });

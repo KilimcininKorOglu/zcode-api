@@ -172,8 +172,8 @@ interface ListingBody {
 function renderListingHtml(body: ListingBody): string {
   const rows = body.servers
     .map((s) => {
-      const name = s.displayName["zh-CN"] ?? s.displayName.en ?? s.key;
-      const desc = s.description["zh-CN"] ?? s.description.en ?? "";
+      const name = s.displayName.en ?? s.key;
+      const desc = s.description.en ?? "";
       return `      <tr><td><a href="${escapeHtml(s.path)}">${escapeHtml(s.key)}</a></td><td>${escapeHtml(name)}</td><td>${escapeHtml(desc)}</td><td><code>${escapeHtml(s.routeId)}</code></td><td>${s.requiresPaidPlan ? "yes" : "no"}</td></tr>`;
     })
     .join("\n");
@@ -181,7 +181,7 @@ function renderListingHtml(body: ListingBody): string {
     ? `auth: <b>ready</b> (${escapeHtml(String(body.authMode))})`
     : `auth: <b>not ready</b> (${escapeHtml(String(body.authError))})`;
   return `<!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head><meta charset="utf-8"><title>zcode-proxy · MCP endpoints</title>
 <style>body{font-family:system-ui,sans-serif;max-width:60rem;margin:2rem auto;padding:0 1rem}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:.4rem .6rem;text-align:left}code{background:#f4f4f4;padding:0 .3rem}</style>
 </head>

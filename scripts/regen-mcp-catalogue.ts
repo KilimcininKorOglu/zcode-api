@@ -125,10 +125,8 @@ function sha256Hex(buf: Buffer): string {
 }
 
 function pickI18n(base: string | undefined, i18n: Record<string, string> | undefined): Record<string, string> {
-  const out: Record<string, string> = { en: i18n?.en ?? base ?? "" };
-  const zh = i18n?.["zh-CN"] ?? i18n?.zh;
-  if (zh) out["zh-CN"] = zh;
-  return out;
+  // English only: the catalogue must not carry non-English text.
+  return { en: i18n?.en ?? base ?? "" };
 }
 
 /**

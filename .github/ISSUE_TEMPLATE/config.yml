@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
-  - name: 📖 使用文档
+  - name: 📖 Documentation
     url: https://github.com/tridefender/zcode-proxy/blob/master/README.md
-    about: 先看 README，大部分配置问题（auth / provider / plan / 端点 / 模型列表）都在这里有答案。
+    about: Read the README first. Most configuration questions (auth / provider / plan / endpoints / model list) are answered there.

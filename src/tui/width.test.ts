@@ -27,13 +27,9 @@ describe("displayWidth", () => {
     expect(displayWidth("\x1b[31mab\x1b[0m")).toBe(2);
   });
 
-  test("CJK counts two cells", () => {
-    expect(displayWidth("日志")).toBe(4);
-    expect(displayWidth("a日b志")).toBe(6);
-  });
-
-  test("fullwidth forms count two cells", () => {
-    expect(displayWidth("ＡＢ")).toBe(4);
+  test("wide characters count two cells", () => {
+    expect(displayWidth("🚀🚀")).toBe(4);
+    expect(displayWidth("a🚀b🚀")).toBe(6);
   });
 
   test("emoji count two cells", () => {
@@ -59,9 +55,9 @@ describe("truncateToWidth", () => {
   });
 
   test("never cuts a wide char in half", () => {
-    const out = truncateToWidth("日志日志日志", 7);
+    const out = truncateToWidth("🚀🚀🚀🚀", 7);
     expect(displayWidth(out)).toBe(7);
-    expect(out).toBe("日志日…");
+    expect(out).toBe("🚀🚀🚀…");
   });
 
   test("handles ANSI-laden input by stripping first", () => {
@@ -75,7 +71,7 @@ describe("truncateToWidth", () => {
   });
 
   test("wide ellipsis still fits", () => {
-    const out = truncateToWidth("日志志", 3);
+    const out = truncateToWidth("🚀🚀🚀", 3);
     expect(displayWidth(out)).toBeLessThanOrEqual(3);
   });
 });
@@ -86,8 +82,8 @@ describe("padEndWidth", () => {
     expect(padEndWidth("ab", 5)).toBe("ab   ");
   });
 
-  test("pads CJK correctly", () => {
-    expect(displayWidth(padEndWidth("日志", 6))).toBe(6);
+  test("pads wide characters correctly", () => {
+    expect(displayWidth(padEndWidth("🚀🚀", 6))).toBe(6);
   });
 
   test("does not shrink overlong input", () => {

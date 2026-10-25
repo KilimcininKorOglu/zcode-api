@@ -71,8 +71,8 @@ describe("KeyParser", () => {
 
   test("UTF-8 multibyte chars survive as single chars", () => {
     const p = new KeyParser();
-    const actions = p.feed("日");
-    expect(actions).toEqual([{ type: "char", key: "日" }]);
+    const actions = p.feed("é");
+    expect(actions).toEqual([{ type: "char", key: "é" }]);
   });
 
   test("SGR mouse press maps to a 0-based click", () => {

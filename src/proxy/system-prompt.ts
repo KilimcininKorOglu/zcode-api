@@ -1,8 +1,7 @@
 /**
  * ZCode system-prompt assembly — a faithful mirror of the desktop client's
- * ContextBuilder (ZCode 3.16.3, `_reverse/glm/zcode.cjs` `Fje`;
- * 3.12.3 `Dle` — assembly structure byte-identical across 3.12.3→3.16.3,
- * `_reverse/NOTEPAD.md` "3.16.3 增补" §F).
+ * ContextBuilder (ZCode 3.16.3 `Fje`; 3.12.3 `Dle` — assembly structure
+ * byte-identical across 3.12.3→3.16.3).
  *
  * The gateway does content inspection — if it doesn't see the ZCode identity
  * blocks in the `system` field, it rejects with 3012 "method not allowed".

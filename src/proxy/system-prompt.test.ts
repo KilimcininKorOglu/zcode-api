@@ -1,12 +1,11 @@
 /**
  * Tests for the start-plan system-prompt assembly (ContextBuilder mirror).
  * Golden assertions anchor the byte-exact 3.16.3 bundle shapes:
- * `_reverse/glm/zcode.cjs` `Fje` (ContextBuilder/assembleSystemMessages),
  * `Eua` (buildEnvInfoContent), `$Oi`-family (identity), `Ekn` (desktop
  * context incl. Interactive views), `N0o` (dynamic behavior), `F0o`
  * (context management), `Mje`/`Rkn` (currentDate context_prefix), `pK`
  * (formatLocalIsoDate). Block shape per 3.15.1+ wire: cli_prefix block has
- * NO cache_control (`_reverse/NOTEPAD.md` "3.16.3 增补" §F).
+ * NO cache_control.
  */
 import { describe, it, expect } from "bun:test";
 import {

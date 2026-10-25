@@ -50,8 +50,8 @@ describe("KeyResolver", () => {
       "getCustomerInfo": () => bizResponse({
         organizations: [
           { organizationId: "org1", organizationName: "Some Org", projects: [] },
-          { organizationId: "org2", organizationName: "默认机构", projects: [
-            { projectId: "proj1", projectName: "默认项目" },
+          { organizationId: "org2", organizationName: "\u9ED8\u8BA4\u673A\u6784", projects: [
+            { projectId: "proj1", projectName: "\u9ED8\u8BA4\u9879\u76EE" },
             { projectId: "proj2", projectName: "Other" },
           ]},
         ],
@@ -158,7 +158,7 @@ describe("KeyResolver", () => {
         status: 200, headers: { "content-type": "application/json" },
       }),
       "getCustomerInfo": () => bizResponse({
-        organizations: [{ organizationId: "o1", organizationName: "默认机构", projects: [{ projectId: "p1", projectName: "默认项目" }] }],
+        organizations: [{ organizationId: "o1", organizationName: "Default Org", projects: [{ projectId: "p1", projectName: "Default Project" }] }],
       }),
       "api_keys/copy": () => bizResponse({ secretKey: "mySecret" }),
       "api_keys": (body) => {
@@ -179,7 +179,7 @@ describe("KeyResolver", () => {
         status: 200, headers: { "content-type": "application/json" },
       }),
       "getCustomerInfo": () => bizResponse({
-        organizations: [{ organizationId: "o1", organizationName: "默认机构", projects: [{ projectId: "p1", projectName: "默认项目" }] }],
+        organizations: [{ organizationId: "o1", organizationName: "Default Org", projects: [{ projectId: "p1", projectName: "Default Project" }] }],
       }),
       "api_keys/copy": () => bizResponse({}),
       "api_keys": (body) => {
@@ -195,7 +195,7 @@ describe("KeyResolver", () => {
   it("resolveCodingPlanCredential bigmodel tolerates a missing secretKey (bundle keeps requireSecretKey unset)", async () => {
     const fetchImpl = mockFetch({
       "getCustomerInfo": () => bizResponse({
-        organizations: [{ organizationId: "o1", organizationName: "默认机构", projects: [{ projectId: "p1", projectName: "默认项目" }] }],
+        organizations: [{ organizationId: "o1", organizationName: "Default Org", projects: [{ projectId: "p1", projectName: "Default Project" }] }],
       }),
       "api_keys/copy": () => bizResponse({}),
       "api_keys": (body) => {

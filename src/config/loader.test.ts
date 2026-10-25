@@ -734,7 +734,7 @@ identity:
   it("identity: non-ASCII appVersion falls back to default", () => {
     const path = writeYaml(`
 identity:
-  appVersion: "v3.3.3-中文"
+  appVersion: "v3.3.3-ünïcode"
 `);
     const cfg = loadConfig(path);
     expect(cfg.identity.appVersion).toBe("3.15.1");

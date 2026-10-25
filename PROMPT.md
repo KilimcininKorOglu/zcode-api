@@ -13,8 +13,7 @@ The ZCode system prompt is assembled from modular sections, grouped by `injectio
 >    by current sections with new wording (Comm Style → "# Communicating with the user" ; Risky → Dynamic
 >    Behavior trailer; Task → Context Management behavior rules). The proxy does not copy them.
 > 2. The final wire shape is decided by `assembleSystemMessages`  : **exactly 3 system blocks** — (1) CLI Prefix alone,
->    **no cache_control** (ephemeral removed in 3.15.1; 3.12.3–3.14.4 carried it on all three blocks, see NOTEPAD
->    "3.16.3 增补" §F); (2) remaining stable sections `\n\n` joined (ephemeral);
+>    **no cache_control** (ephemeral removed in 3.15.1; 3.12.3–3.14.4 carried it on all three blocks); (2) remaining stable sections `\n\n` joined (ephemeral);
 >    (3) all dynamic sections `\n\n` joined with an overall `\n\n` prefix (ephemeral). Lines inside a section are joined with `\n`  .
 >    meta_user (currentDate etc.) assembled via `tct` into context_prefix, wrapped as `<system-reminder>…</system-reminder>`
 >    (`blt`, no embedded newlines)and attached as the first user turn.
@@ -23,13 +22,13 @@ The ZCode system prompt is assembled from modular sections, grouped by `injectio
 
 ---
 
-## 1. CLI Prefix（Fixed prefix）
+## 1. CLI Prefix (Fixed prefix)
 
 ```
 You are ZCode, an interactive coding agent
 ```
 
-## 2. Agent Identity（Core identity）
+## 2. Agent Identity (Core identity)
 
 When no custom Output Style is set:
 
@@ -45,7 +44,7 @@ When an Output Style is set:
 You respond to the user according to the active Output Style below while using ZCode's tools and instructions.
 ```
 
-### Harness（Operational constraints）
+### Harness (Operational constraints)
 
 ```
 - Text you output outside of tool use is displayed to the user as Github-flavored markdown in a terminal.
@@ -55,7 +54,7 @@ You respond to the user according to the active Output Style below while using Z
 - Reference code as `file_path:line_number` — it's clickable.
 ```
 
-## 2b. ZCode Desktop Context（Desktop injection, stable）
+## 2b. ZCode Desktop Context (Desktop injection, stable)
 
 `presentationSurface === "zcode_desktop"` triggers the injection (`Ekn` in 3.16.3; cacheHint **stable**), and the section lives in block 2 together with Agent Identity.
 Since 3.15.1 the section starts with an `### Interactive views` subsection (always present): 3 lines plus the Widget line
@@ -86,9 +85,9 @@ when a genUiOutputDirectory exists (the desktop norm; the proxy mirrors the dete
 - Example: ::code-comment{title="[P2] Off-by-one" body="Loop iterates past the end when length is 0." file="/path/to/foo.ts" start=10 end=11 priority=2}
 ```
 
-## 3. Dynamic Behavior（Dynamic behavior rules, current 3.11.2 text）
+## 3. Dynamic Behavior (Dynamic behavior rules, current 3.11.2 text)
 
-`wTr`/`Xlt`，cacheHint **dynamic**。3.11.2 from v `Xlt.additional` carries default content (the"# Communicating with the user" paragraph group), assembled as
+`wTr`/`Xlt`, cacheHint **dynamic**.3.11.2 from v `Xlt.additional` carries default content (the"# Communicating with the user" paragraph group), assembled as
 `beforeDefault + "\n\n" + default + "\n" + afterDefault + "\n\n" + forActions` (note: default and comment rules are separated by a **single newline**):
 
 ```
@@ -110,7 +109,7 @@ Only write a code comment to state a constraint the code itself can't show — n
 For actions that are hard to reverse or outward-facing, confirm first unless durably authorized or explicitly told to proceed without asking; approval in one context doesn't extend to the next. Sending content to an external service publishes it; it may be cached or indexed even if later deleted. Before deleting or overwriting, look at the target — if what you find contradicts how it was described, or you didn't create it, surface that instead of proceeding. Report outcomes faithfully: if tests fail, say so with the output; if a step was skipped, say that; when something is done and verified, state it plainly without hedging.
 ```
 
-## 4. Task Behavior（Task execution rules）
+## 4. Task Behavior (Task execution rules)
 
 ```
 Work like a senior coding agent:
@@ -210,7 +209,7 @@ Investigate first:
 - The repo has conflicts, generated files, or build outputs mixed with source files.
 ```
 
-## 6. Communication Style（Communication style）
+## 6. Communication Style (Communication style)
 
 ```
 - Text you output outside tool calls is shown to the user. Use it to communicate decisions, progress, errors, and results.
@@ -264,9 +263,9 @@ Final response examples:
 - Bad: `Everything works perfectly.` unless that is directly verified.
 ```
 
-## 7. Context Management（Context management, current 3.11.2 text）
+## 7. Context Management (Context management, current 3.11.2 text)
 
-`STr`/`xTr`，cacheHint **dynamic**，always follows Environment Info (inside the dynamic block). Assembled as `default + "\n\n" + additional` (additional entry 1 "…exhaustive survey" has **no trailing period**, verbatim bundle literal):
+`STr`/`xTr`, cacheHint **dynamic**, always follows Environment Info (inside the dynamic block). Assembled as `default + "\n\n" + additional` (additional entry 1 "…exhaustive survey" has **no trailing period**, verbatim bundle literal):
 
 ```
 # Context management
@@ -283,7 +282,7 @@ Before ending your turn, check your last paragraph. If it is a plan, an analysis
 Before running a command that changes system state — restarts, deletes, config edits — check that the evidence actually supports that specific action. A signal that pattern-matches to a known failure may have a different cause.
 ```
 
-## 8. Session Guidance（Session guidance）
+## 8. Session Guidance (Session guidance)
 
 Injected when the Skills tool is available:
 
@@ -291,7 +290,7 @@ Injected when the Skills tool is available:
 - When the user types `/<skill-name>`, invoke it via Skill. Only use skills listed in the user-invocable skills section — don't guess.
 ```
 
-## 9. Compaction Prompt（Context-compaction prompt）
+## 9. Compaction Prompt (Context-compaction prompt)
 
 When the conversation grows too long, ZCode uses the following prompt to make the model summarize:
 
@@ -345,7 +344,7 @@ Continue from the current task without recapping this summary to the user.
 
 `build()` collects sections in push order, then `assembleSystemMessages` groups by `injectionTarget` + `cacheHint` into **exactly 3 system blocks**:
 
-1. **Block 1 = cli_prefix alone**（**no cache_control** — ephemeral removed in 3.15.1）
+1. **Block 1 = cli_prefix alone** (**no cache_control** — ephemeral removed in 3.15.1)
 2. **Block 2 = remaining STABLE sections,`\n\n` joined (ephemeral)**: Agent Identity → (replaced by custom system prompt when present) → ZCode Desktop Context (desktop, stable, carries the Interactive views subsection since 3.15.1)
 3. **Block 3 = all DYNAMIC sections,`\n\n` joined, with an overall `\n\n` prefix**: Dynamic Behavior → Session Guidance (conditional) → Memory (conditional) → **Environment Info** → Output Style (conditional) → **Context Management** → Git System Context (conditional)
 
@@ -357,7 +356,7 @@ Final message layout (Anthropic wire):
 ```
 [system block 1] cli_prefix                                        (no cache_control, 3.15.1+)
 [system block 2] identity [+ desktop context plus other stable segments]          (ephemeral)
-[system block 3] "\n\n" + dynamic segments (incl. Environment, Context Mgmt）(ephemeral)
+[system block 3] "\n\n" + dynamic segments (incl. Environment, Context Mgmt)(ephemeral)
 [user]      <system-reminder>skills_listing…</system-reminder>
 [user]      <system-reminder>context_prefix (currentDate etc.)…</system-reminder>
 [user]      actual user input
