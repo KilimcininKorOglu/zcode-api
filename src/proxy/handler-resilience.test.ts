@@ -17,7 +17,6 @@ import { describe, it, expect, mock } from "bun:test";
 import { proxyRequest, type ProxyHandlerOptions } from "./handler.js";
 import type { ProxyConfig, ProxyIdentity } from "../config/types.js";
 import { AuthManager } from "../auth/manager.js";
-import { SUBAGENT_PREFIX } from "./trace-headers.js";
 
 const IDENTITY: ProxyIdentity = {
   appVersion: "test-1.0.0",
@@ -165,12 +164,11 @@ describe("proxyRequest — start-plan resilience (PR #34 review P1/P3)", () => {
 });
 
 /**
- * The gateway cross-checks `x-zcode-session-type` against the system shape: a
- * start-plan request carrying a client system prompt takes the 2-block
- * customSystemPrompt path, which must ride a subagent session identity
- * (405/3012 "unusual activity" otherwise — live-verified 2026-10-23).
+ * Since the 2026-10-24 gateway rule (issue #71) a start-plan request with a
+ * client system prompt keeps the official 3-block shape with the client text
+ * appended to the stable block, and the session stays `main`.
  */
-describe("proxyRequest — start-plan custom system takes the subagent identity", () => {
+describe("proxyRequest — start-plan client system keeps the main session", () => {
   const captcha = captchaStub(async () => ({ verifyParam: "cap", region: "sgp" }));
 
   /** Captures the upstream Request and answers with a plain Anthropic message. */
@@ -187,7 +185,7 @@ describe("proxyRequest — start-plan custom system takes the subagent identity"
     return JSON.stringify({ model: "glm-4.6", max_tokens: 16, system, messages: [{ role: "user", content: "hi" }] });
   }
 
-  it("sends 2 system blocks and derives the subagent session type", async () => {
+  it("sends 3 system blocks with the client text on the stable block and main session", async () => {
     const { ctx, fetchImpl } = captureContext();
     const auth = new AuthManager();
     auth.setOAuthCredential({ apiKey: "key-mock", provider: "zai", jwt: "jwt-mock" });
@@ -199,18 +197,15 @@ describe("proxyRequest — start-plan custom system takes the subagent identity"
 
     const resp = await proxyRequest(clientReq, "anthropic", { config: TEST_CONFIG, auth, fetchImpl, captcha });
     expect(resp.status).toBe(200);
-    expect(ctx.req!.headers.get("x-zcode-session-type")).toBe("subagent");
-    // observe mode does not forward the session id; when it is forwarded the
-    // internal subagent prefix never reaches the wire.
-    const wireSessionId = ctx.req!.headers.get("x-session-id");
-    expect(wireSessionId === null || !wireSessionId.startsWith(SUBAGENT_PREFIX)).toBe(true);
+    expect(ctx.req!.headers.get("x-zcode-session-type")).toBe("main");
 
     const upstreamBody = await ctx.req!.clone().json() as { system: Array<{ text: string }> };
-    expect(upstreamBody.system).toHaveLength(2);
-    expect(upstreamBody.system[1].text).toBe("\nUser rule");
+    expect(upstreamBody.system).toHaveLength(3);
+    expect(upstreamBody.system[1].text.endsWith("\n\nUser rule")).toBe(true);
+    expect(upstreamBody.system[2].text).toContain("# Environment");
   });
 
-  it("synthesizes the subagent identity when client identity is off", async () => {
+  it("stays main when client identity is off (no subagent synthesis)", async () => {
     const { ctx, fetchImpl } = captureContext();
     const auth = new AuthManager();
     auth.setOAuthCredential({ apiKey: "key-mock", provider: "zai", jwt: "jwt-mock" });
@@ -223,10 +218,7 @@ describe("proxyRequest — start-plan custom system takes the subagent identity"
 
     const resp = await proxyRequest(clientReq, "anthropic", { config, auth, fetchImpl, captcha });
     expect(resp.status).toBe(200);
-    expect(ctx.req!.headers.get("x-zcode-session-type")).toBe("subagent");
-    const wireSessionId = ctx.req!.headers.get("x-session-id");
-    expect(wireSessionId).toBeDefined();
-    expect(wireSessionId!.startsWith(SUBAGENT_PREFIX)).toBe(false);
+    expect(ctx.req!.headers.get("x-zcode-session-type")).toBe("main");
   });
 
   it("keeps the main identity and the 3-block chain without a client system prompt", async () => {

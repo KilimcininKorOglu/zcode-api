@@ -62,8 +62,7 @@ import { probeFetchDecompressBehavior } from "./decompress-probe.js";
 import { collectAnthropicMessage } from "./sse-collector.js";
 import { appendErrorLog } from "./error-log.js";
 import { StreamMetrics } from "./stream-metrics.js";
-import { buildAnthropicMetadataUserId, SUBAGENT_PREFIX } from "./trace-headers.js";
-import { hasCustomSystemPrompt } from "./system-prompt.js";
+import { buildAnthropicMetadataUserId } from "./trace-headers.js";
 
 /** Options for the proxy handler. */
 export interface ProxyHandlerOptions {
@@ -198,19 +197,15 @@ export async function proxyRequest(
   // Session affinity is calculated on the translated anthropic side: upstream requests are always
   // Anthropic shape, so OpenAI client and Anthropic client in the same conversation get isomorphic
   // canonical identity (hash lineage / task identity aligned with upstream conversation, not client dialect).
+  // Session context stays as resolved: since the 2026-10-24 gateway rule
+  // (issue #71) a client system no longer forces a subagent identity — the
+  // custom 2-block shape is rejected under both session types, so client
+  // systems ride the default 3-block shape with the main session.
   let clientSession = resolveSessionContext({ clientReq, body: upstreamBody, traceBody: body, upstreamFormat, model: meta.model, config });
   if (debug && clientSession) {
     const shortSession = clientSession.sessionId ? clientSession.sessionId.slice(0, 10) : "-";
     debugLine(reqId, `clientIdentity source=${clientSession.source} action=${clientSession.action} confidence=${clientSession.confidence.toFixed(2)} session=${shortSession}`);
   }
-
-  // start-plan + client system prompt: body-transformer emits the official
-  // customSystemPrompt shape (2 system blocks, subagent shape). The gateway
-  // cross-checks x-zcode-session-type against the system shape; main + custom
-  // = 405/3012 "unusual activity" (opencode-502 root cause, live-verified
-  // 2026-10-23; subagent + custom 200). Custom requests therefore ride the
-  // subagent session identity — see applyCustomSystemSession.
-  clientSession = applyCustomSystemSession(clientSession, startPlan, upstreamBody, debug, reqId);
 
   // Bundle `E2e` fires for EVERY anthropic-kind request (both plans) — the
   // injected user_id is the device/session blob, never the account uuid.
@@ -631,9 +626,7 @@ export async function proxyRequest(
 
   if (translateOpenAIToAnthropic) {
     if (!upstreamResp.ok) {
-      const errBody = await upstreamResp.text().catch(() => "");
-      printRow(reqId, format, meta, 502, started, headersAt, 0, 0, 0);
-      return errorResponse(502, "translation_failed", `upstream returned ${upstreamResp.status}: ${errBody.slice(0, 200)}`);
+      return upstreamErrorPassthrough(reqId, format, meta, upstreamResp, started, headersAt);
     }
     if (isSSE && upstreamResp.body) {
       if (!meta.stream) {
@@ -655,9 +648,7 @@ export async function proxyRequest(
 
   if (translateAnthropicToOpenAI) {
     if (!upstreamResp.ok) {
-      const errBody = await upstreamResp.text().catch(() => "");
-      printRow(reqId, format, meta, 502, started, headersAt, 0, 0, 0);
-      return errorResponse(502, "translation_failed", `upstream returned ${upstreamResp.status}: ${errBody.slice(0, 200)}`);
+      return upstreamErrorPassthrough(reqId, format, meta, upstreamResp, started, headersAt);
     }
     if (isSSE && upstreamResp.body) {
       const translated = openaiSseToAnthropicSse(upstreamResp.body, meta.model);
@@ -1342,56 +1333,25 @@ function nextReqId(): string {
 }
 
 /**
- * Pair a start-plan custom-system request with the subagent session identity.
- * Returns the session unchanged for every other request.
+ * Translate-mode upstream failures pass the REAL status + body through
+ * (issue #71): wrapping them as 502 made clients retry 405/429 as if they
+ * were transient gateway faults. The upstream body (Anthropic error JSON)
+ * is forwarded verbatim with its content-type.
  */
-function applyCustomSystemSession(
-  session: ClientSessionResult | undefined,
-  startPlan: boolean,
-  body: string | undefined,
-  debug: boolean,
+async function upstreamErrorPassthrough(
   reqId: string,
-): ClientSessionResult | undefined {
-  if (!startPlan || !bodyHasClientSystem(body)) return session;
-  if (debug) debugLine(reqId, "subagent session identity applied (custom system prompt path)");
-  return subagentSession(session);
-}
-
-/**
- * Subagent session identity for the custom-system path: the same resolved
- * session id with a `subagent_agent_` prefix (stripped on the wire by the
- * trace-header builder, derivation only), or a synthesized id when lineage
- * produced none. The explicit `sessionType` covers the no-session-id case.
- */
-function subagentSession(base: ClientSessionResult | undefined): ClientSessionResult {
-  if (!base) {
-    return {
-      source: "none",
-      action: "enforce",
-      confidence: 1,
-      sessionId: `${SUBAGENT_PREFIX}${crypto.randomUUID()}`,
-      sessionType: "subagent",
-    };
-  }
-  const id = base.upstreamSessionId ?? base.sessionId ?? crypto.randomUUID();
-  const subagentId = id.startsWith(SUBAGENT_PREFIX) ? id : `${SUBAGENT_PREFIX}${id}`;
-  return { ...base, sessionId: subagentId, upstreamSessionId: subagentId, sessionType: "subagent" };
-}
-
-/**
- * Whether the (Anthropic-shaped) upstream body carries a client system prompt
- * — i.e. transformRequestBody will take the customSystemPrompt 2-block path.
- * Same predicate as buildStartPlanSystem via hasCustomSystemPrompt; parse
- * failures read as "no custom prompt" (fail-open to the default shape).
- */
-function bodyHasClientSystem(body: string | undefined): boolean {
-  if (!body) return false;
-  try {
-    const parsed = JSON.parse(body) as { system?: unknown };
-    return hasCustomSystemPrompt(parsed?.system);
-  } catch {
-    return false;
-  }
+  format: Format,
+  meta: RequestMeta,
+  upstreamResp: Response,
+  started: number,
+  headersAt: number,
+): Promise<Response> {
+  const errBody = await upstreamResp.text().catch(() => "");
+  printRow(reqId, format, meta, upstreamResp.status, started, headersAt, 0, 0, 0);
+  return new Response(errBody, {
+    status: upstreamResp.status,
+    headers: { "content-type": upstreamResp.headers.get("content-type") ?? "application/json" },
+  });
 }
 
 const DEBUG_BODY_PREVIEW = 200;

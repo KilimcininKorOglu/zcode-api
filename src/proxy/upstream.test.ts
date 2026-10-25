@@ -912,7 +912,7 @@ describe("proxyRequest — OpenAI translation mode (coding-plan → Anthropic up
     expect(body.error.type).toBe("translation_failed");
   });
 
-  it("maps upstream non-2xx to 502 translation_failed for translated clients", async () => {
+  it("passes the REAL upstream status + body through for translated clients (issue #71: no 502 wrap)", async () => {
     const fetchMock = mock(async (): Promise<Response> => {
       return new Response('{"type":"error","error":{"type":"invalid_request_error","message":"bad request"}}', { status: 400, headers: { "content-type": "application/json" } });
     });
@@ -920,9 +920,12 @@ describe("proxyRequest — OpenAI translation mode (coding-plan → Anthropic up
     const clientReq = makeOpenAIReq('{"model":"glm-4.6","messages":[]}');
 
     const resp = await proxyRequest(clientReq, "openai", { config: testConfig, auth, fetchImpl: fetchMock as any });
-    expect(resp.status).toBe(502);
-    const body = await resp.json();
-    expect(body.error.type).toBe("translation_failed");
+    // Wrapping upstream 4xx/5xx as 502 made clients retry real rejections
+    // (405/3012, 429) as transient faults — the status and body now pass
+    // through verbatim so clients see the true error.
+    expect(resp.status).toBe(400);
+    const body = (await resp.json()) as { error: { type: string } };
+    expect(body.error.type).toBe("invalid_request_error");
   });
 });
 
@@ -1410,12 +1413,11 @@ describe("proxyRequest — Anthropic compatibility mode (coding-plan)", () => {
       // coding-plan URL, which this stub also answers 403), so the client sees
       // the failure only after the one-shot retry.
       expect(fetchMock).toHaveBeenCalledTimes(2);
-      // Upstream errors are wrapped: openai→anthropic translation mode reports
-      // them as 502 translation_failed (same convention as coding-plan).
-      expect(resp.status).toBe(502);
+      // The REAL upstream status + body pass through (issue #71): no 502
+      // wrapping, so a genuine 403 is not mistaken for a transient fault.
+      expect(resp.status).toBe(403);
       const body = await resp.json();
-      expect(body.error.type).toBe("translation_failed");
-      expect(body.error.message).toContain("403");
+      expect(body.error.type).toBe("forbidden");
     } finally {
       globalThis.fetch = originalFetch;
     }
